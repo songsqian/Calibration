@@ -1,0 +1,575 @@
+---
+title: "Reading_Data_Sheets"
+output: pdf_document
+date: "2022-10-05"
+---
+```{r}
+packages<-function(x, repos="http://cran.r-project.org", ...){
+  x<-as.character(match.call()[[2]])
+  if (!require(x,character.only=TRUE)){
+    install.packages(pkgs=x, repos=repos, ...)
+    require(x,character.only=TRUE)
+  }
+}
+
+base <- getwd()
+
+packages(tidyverse)
+packages(readxl)
+packages(reshape())
+packages(plyr)
+
+```
+
+List of file names from the NOAA GLERL ELISA data sheets
+
+#2012 to 2016-07-18 file names (linear template)
+
+2012 - 15 data sheets
+2013 - 12 data sheets
+2014 - 26 data sheets
+2015 - 24 data sheets -- 2015-10-19 Lake Erie.xlsx does not have data so it was not included in the final count, 2015-08-31" moved to nonlinear because it was updated using the new template so is not included in final count
+2016 - 6 data sheets
+
+Total of 83 data sheets with linear template
+
+```{r}
+GLERLdata1<-c("2012-2013/2012-05-15 LKErie Elisa pt01.xlsx",
+"2012-2013/2012-05-15 LKErie Elisa pt02.xlsx",
+"2012-2013/2012-05-31 LKErie Elisa.xlsx",
+"2012-2013/2012-06-11 LKErie Elisa.xlsx",
+"2012-2013/2012-06-22 LKErie Elisa.xlsx",
+"2012-2013/2012-07-11 LKErie Elisa DEQ .xlsx",
+"2012-2013/2012-07-11 LKErie Elisa DEQ pt2.xlsx",
+"2012-2013/2012-07-12 LKErie Elisa pt2.xlsx",
+"2012-2013/2012-07-12 LKErie Elisa.xlsx",
+"2012-2013/2012-08-28 n 09-00 LKErie Elisa.xlsx",
+"2012-2013/2012-09-05 LKErie Elisa.xlsx",
+"2012-2013/2012-09-10 LKErie Elisa DEQ 01.xlsx",
+"2012-2013/2012-09-10 LKErie Elisa DEQ 02.xlsx",
+"2012-2013/2012-09-10 LKErie Elisa DEQ 03.xlsx",
+"2012-2013/2012-09-10 LKErie Elisa DEQ 04.xlsx",
+"2012-2013/2013-06-17 LKErie Elisa.xlsx",
+"2012-2013/2013-06-24 LKErie Elisa.xlsx",
+"2012-2013/2013-07-03 LKErie Elisa.xlsx",
+"2012-2013/2013-07-15 LKErie Elisa.xlsx",
+"2012-2013/2013-07-29 LKErie Elisa.xlsx",
+"2012-2013/2013-07-30 LKErie Elisa.xlsx",
+"2012-2013/2013-08-05 LKErie Elisa.xlsx",
+"2012-2013/2013-08-12 LKErie Elisa.xlsx",
+"2012-2013/2013-09-03 LKErie Elisa.xlsx",
+"2012-2013/2013-09-09 LKErie Elisa.xlsx",
+"2012-2013/2013-10-15 LKErie Elisa.xlsx",
+"2012-2013/2013-10-21 LKErie Elisa.xlsx",
+"2014-2015/2014-05-27 LKErie Elisa.xlsx",
+"2014-2015/2014-06-16 LKErie Elisa.xlsx",
+"2014-2015/2014-06-30 Lake Erie Alt Extration ELISA.xlsx",
+"2014-2015/2014-07-08 LK Erie Elisa.xlsx",
+"2014-2015/2014-07-08_14_21_29 N 8-04 WE12 Lake Erie Alt Extration ELISA.xlsx",
+"2014-2015/2014-07-14 Lake Erie Elisa.xlsx",
+"2014-2015/2014-07-21_8-04 Lake Erie Alt Extration ELISA.xlsx",
+"2014-2015/2014-07-21_9-23 Lake Erie Alt Extration ELISA.xlsx",
+"2014-2015/2014-07-29 Lake Erie Alt Extration ELISA.xlsx",
+"2014-2015/2014-07-29 Lake Erie WE 06 Alt Extration ELISA.xlsx",
+"2014-2015/2014-08-04 Lake Erie Elisa.xlsx",
+"2014-2015/2014-08-11 Lake Erie Alt Extration ELISA.xlsx",
+"2014-2015/2014-08-11 LKErie Elisa.xlsx",
+"2014-2015/2014-08-19 LKErie Elisa Site 973 Toxin.xlsx",
+"2014-2015/2014-08-19_20 LKErie Elisa Site 973_974 Dissolved.xlsx",
+"2014-2015/2014-08-20 LKErie Elisa Site 974 Toxin.xlsx",
+"2014-2015/2014-08-25 Lake Erie Alt Extration ELISA.xlsx",
+"2014-2015/2014-08-25 LKErie Elisa.xlsx",
+"2014-2015/2014-09-03 LKErie Elisa Site 973 Toxin B.xlsx",
+"2014-2015/2014-09-03 LKErie Elisa Site 973 Toxin.xlsx",
+"2014-2015/2014-09-03 LKErie Elisa Site 1198 TDRX4 Dissolved.xlsx",
+"2014-2015/2014-09-03 LKErie Elisa Site 1198 TDRX4.xlsx",
+"2014-2015/2014-09-15 Lake Erie Alt Extration ELISA.xlsx",
+"2014-2015/2014-09-23 LKErie Sag Bay Elisa.xlsx",
+"2014-2015/2014-09-29 LKErie Sag Bay Elisa.xlsx",
+"2014-2015/2014-10-27 LkE n 10-23 SagBay Elisa.xlsx",
+"2014-2015/2015-04-21 MEOH Extraction 1st.xlsx",
+"2014-2015/2015-04-21 Quicklyse Frozen test strip.xlsx",
+"2014-2015/2015-06-08 LKErie Elisa.xlsx",
+"2014-2015/2015-06-11 SagBay Elisa dilution01.xlsx",
+"2014-2015/2015-06-11 SagBay Elisa.xlsx",
+"2014-2015/2015-06-22 Lake Erie.xlsx",
+"2014-2015/2015-07-06 Lake Erie Scums.xlsx",
+"2014-2015/2015-07-14 Lake Erie 2nd attempt.xlsx",
+"2014-2015/2015-07-14 Lake Erie 3rd attempt.xlsx",
+"2014-2015/2015-07-14 Lake Erie first attempt.xlsx",
+"2014-2015/2015-07-14 Lake Erie.xlsx",
+"2014-2015/2015-07-20 Lake Erie.xlsx",
+"2014-2015/2015-07-27 Lake Erie 2nd attempt.xlsx",
+"2014-2015/2015-07-27 Lake Erie.xlsx",
+"2014-2015/2015-08-10 Lake Erie dilutions.xlsx",
+"2014-2015/2015-08-10 Lake Erie.xlsx",
+"2014-2015/2015-08-17 Lake Erie.xlsx",
+# "2014-2015/2015-08-31 moved to nonlinear bc of update by NOAA GLERL
+"2014-2015/2015-09-08 Lake Erie.xlsx",
+"2014-2015/2015-09-14 Lake Erie.xlsx",
+"2014-2015/2015-09-21 Lake Erie.xlsx",
+"2014-2015/2015-09-28 Lake Erie.xlsx",
+"2014-2015/2015-10-05 Lake Erie.xlsx",
+"2014-2015/2015-10-14 Lake Erie.xlsx",
+#"2014-2015/2015-10-19 Lake Erie.xlsx", no data in sheet 
+"2014-2015/2015-10-22  SagBay_2015-06-25 SagBay.xlsx",
+"2016/2016-05-31 Lake Erie.xlsx",
+"2016/2016-06-13 Lake Erie pt02.xlsx",
+"2016/2016-06-13 Lake Erie.xlsx",
+"2016/2016-06-27 Lake Erie.xlsx",
+"2016/2016-07-05 Lake Erie.xlsx",
+"2016/2016-07-18 Lake Erie.xlsx")
+
+```
+
+#2016-07-25 to 2021 file names (nonlinear template)
+
+2016 - 21 data sheets 
+2017 - 21 data sheets
+2018 - 24 data sheets
+2019 - 14 data sheets--file 2019-08-05 and 2019-09-03 had to be reformatted in order to read in all of the samples (I left a note in the files). I saved a copy of the original but will be reading in the edited version for the analysis
+2020 27 data sheets
+2021 - 23 data sheets-- files 9-20-2021 and onward had a tab labeled "INSTRUCTIONS" as the first tab instead of the data tab being first. I had to move this tab so Raw data tab was listed first.
+
+Total of 131 data sheets
+
+```{r}
+GLERLdata2<-c(
+"2014-2015/2015-08-31 new ELISA Spreadsheet.xlsx", # updated sheet from NOAA GLERL
+"2016/2016-07-25 Davis ELISA MC page 2.xls",
+"2016/2016-07-25 Davis ELISA MC.xls",
+"2016/2016-08-01 Davis ELISA MC.xls",
+"2016/2016-08-03 Diel Cruise Mid n Bottom.xls",
+"2016/2016-08-03 Diel Cruise Surface.xls",
+"2016/2016-08-09 Davis ELISA MC.xls",
+"2016/2016-08-22 Davis ELISA MC.xls",
+"2016/2016-08-22 pg02 Davis ELISA MC.xls",
+"2016/2016-08-29 Davis ELISA MC (Real).xls",
+"2016/2016-09-06 Davis ELISA MC.xls",
+"2016/2016-09-06 dilution Davis ELISA MC.xls",
+"2016/2016-09-12 Davis ELISA MC.xls",
+"2016/2016-09-19 Davis ELISA MC.xls",
+"2016/2016-09-19 pt 2Davis ELISA MC.xls",
+"2016/2016-09-22 Sag Bay Davis ELISA MC.xls",
+"2016/2016-09-28 Davis ELISA MC (Autosaved).xls",
+"2016/2016-10-03 Davis ELISA MC.xls",
+"2016/2016-10-03 pt 2Davis ELISA MC.xls",
+"2016/2016-10-03 pt 3Davis ELISA MC.xls",
+"2016/2016-10-17 Davis ELISA MC.xls",
+"2016/2016-10-22 Davis ELISA MC.xls",
+"2017/2017-05-30 Davis ELISA MC.xls",
+"2017/2017-07-05 Davis ELISA MC.xls",
+"2017/2017-07-17 Davis ELISA MC 2.xls",
+"2017/2017-07-17 Davis ELISA MC.xls",
+"2017/2017-07-24 Davis ELISA MC.xls",
+"2017/2017-07-31 Davis ELISA MC.xls",
+"2017/2017-07-31 pt2 Davis new ELISA Spreadsheet.xlsx", # updated sheet from NOAA GLERL
+"2017/2017-08-07 Davis ELISA MC.xls",
+"2017/2017-08-09 Deil Cruise ELISA MC first run.xls",
+"2017/2017-08-09 Deil Cruise ELISA MC second run.xls",
+"2017/2017-08-09 Deil Cruise ELISA MC.xls",
+"2017/2017-08-14 Davis ELISA MC.xls",
+"2017/2017-08-14 pt2 Davis ELISA MC.xls",
+"2017/2017-08-28 Davis ELISA MC.xls",
+"2017/2017-09-05 Davis ELISA MC.xls",
+"2017/2017-09-11 Davis ELISA MC.xls",
+"2017/2017-09-18 Davis ELISA MC.xls",
+"2017/2017-09-25 Davis ELISA MC.xls",
+"2017/2017-10-02 Davis ELISA MC.xls",
+"2017/2017-10-10 Davis ELISA MC.xls",
+"2017/2017-10-16 Davis ELISA MC.xls",
+"2018/2018_08_26-30 Lk Erie ESP3 run02.xls",
+"2018/2018_08_26-30 Lk Erie ESP3.xls",
+"2018/2018-05-21 -02 Epoch ELISA MC.xls",
+"2018/2018-05-21 Davis ELISA MC.xls",
+"2018/2018-05-21 Duane ELISA MC.xls",
+"2018/2018-05-21 Epoch ELISA MC.xls",
+"2018/2018-06-12 Epoch ELISA MC.xls",
+"2018/2018-06-25 Epoch ELISA MC.xls",
+"2018/2018-07-02 Epoch ELISA MC pt 01.xls",
+"2018/2018-07-09 Epoch ELISA MC plate1.xls",
+"2018/2018-07-16 Epoch ELISA MC.xls",
+"2018/2018-07-23 Epoch ELISA MCplate01.xls",
+"2018/2018-07-23 Epoch ELISA MCrun02plate01.xls",
+"2018/2018-07-30 Epoch ELISA MCplate01.xls",
+"2018/2018-08-06 Epoch ELISA MCplate01.xls",
+"2018/2018-08-13 Epoch ELISA MC.xls",
+"2018/2018-08-14 ESP_pos_Elisa.xls",
+"2018/2018-08-20 Epoch ELISA MCRun1plate01.xls",
+"2018/2018-08-20 Epoch ELISA MCRun2plate01.xls",
+"2018/2018-09-04 Epoch ELISA MC run01plate1.xls",
+"2018/2018-09-11 Epoch ELISA MC run01plate1.xls",
+"2018/2018-09-17 Epoch ELISA MC run01plate1.xls",
+"2018/2018-10-01 Epoch ELISA MC plate1.xls",
+"2018/2018-10-09 Epoch ELISA MC plate1.xls",
+"2019/2019-07-01 LakeErie.xls",
+"2019/2019-07-15 Lake Erie.xls",
+"2019/2019-07-23 LakeErie Corrected.xls",
+"2019/2019-07-23 LakeErie_run2 Corrected.xls",
+"2019/2019-07-29 LakeErie  Corrected.xls",
+"2019/2019-07-29 LakeErie_plate2 Corrected.xls",
+"2019/2019-08-05 LakeErie_run2 Corrected.xls",
+"2019/2019-08-12 LakeErie corrected.xls",
+"2019/2019-08-12 LakeErie_run2 corrected.xls",
+"2019/2019-09-03 LakeErie corrected.xls",
+"2019/2019-09-16 LakeErie corrected.xls",
+"2019/2019-09-18 LakeErie corrected.xls",
+"2019/2019-09-24 LakeErie corrected.xls",
+"2019/2019-09-24 LakeErie_run2 corrected.xls",
+"2020/2020-06-16 Lake Erie.xlsx",
+"2020/2020-06-29 Lake Erie Elisa run 2.xlsx",
+"2020/2020-06-29 Lake Erie.xlsx",
+"2020/2020-07-06 Lake Erie Elisa.xlsx",
+"2020/2020-07-13 Lake Erie Elisa.xlsx",
+"2020/2020-07-20 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-07-20 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-07-28 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-07-28 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-08-04 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-08-04 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-08-10 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-08-10 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-08-17 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-08-17 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-08-24 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-08-24 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-09-01 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-09-01 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-09-09 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-09-09 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-09-15 Lake Erie ELISA plate 1 (1).xls",
+"2020/2020-09-21 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-09-21 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-09-28 Lake Erie ELISA plate 01.xlsx",
+"2020/2020-09-28 Lake Erie ELISA plate 02.xlsx",
+"2020/2020-10-05 Lake Erie ELISA.xlsx",
+"2021/2021-04-26_05-24 Lake Erie ELISA plate 01.xlsx",
+"2021/2021-06-07 Lake Erie Elisa.xlsx",
+"2021/2021-06-22 Lake Erie Elisa plate 01_w_SB05.xlsx",
+"2021/2021-07-06 Lake Erie Elisa.xlsx",
+"2021/2021-07-13_1_elisa_hk.xls",
+"2021/2021-07-13_2_elisa_hk.xls",
+"2021/2021-07-20_1_elisa_hk.xls",
+"2021/2021-07-20_2_elisa_hk.xls",
+"2021/2021-07-26 Lake Erie Elisa plate 01.xlsx",
+"2021/2021-08-02 Lake Erie Elisa plate 01.xlsx",
+"2021/2021-08-02 Lake Erie Elisa plate 02.xlsx",
+"2021/2021-08-02 Lake Erie Elisa plate 03 new.xlsx", # updated sheet from NOAA GLERL
+"2021/2021-08-09 Lake Erie Elisa plate 01.xlsx",
+"2021/2021-08-09 Lake Erie Elisa plate 02.xlsx",
+"2021/2021-08-18 A_elisa_hk.xls",
+"2021/2021-08-18 B_elisa_hk .xls",
+"2021/2021-08-23 Lake Erie Elisa plate 01.xlsx",
+"2021/2021-08-23 Lake Erie Elisa plate 02.xlsx",
+"2021/2021-09-20 Lake Erie Elisa.xlsx",
+"2021/2021-09-27 Lake Erie Elisa.xlsx",
+"2021/2021-10-04 Lake Erie_Sag Bay Elisa.xlsx",
+"2021/2021-10-12 Lake Erie Elisa.xlsx",
+"2021/2021-10-18 Lake Erie Elisa.xlsx"
+)
+
+save(GLERLdata2, GLERLdata1, file="NOAA_data_names.RData")
+
+```
+
+load file names. two lists (1) GLERLdata1 and (2) GLERLdata2
+```{r}
+# file names
+load("NOAA_data_names.RData")
+```
+
+The following code reads in and organizes the NOAA ELISA data sheets that used the linear curve (83 sheets total, 2012-5-15 through 2016-7-18). We read in sample ID, absorbance (2 reps for each sample), resuspension vol, dlf, vol. filtered, and the final concentrations of the unknowns that NOAA estimated after running the test. We calculated the conversion factor for the dilutions. The equation for this is:
+
+Conversion factor (aka dilution factor) for linear templates = resuspension vol * dlf/vol. filtered
+
+We also added a column for the test number (1-83) 
+
+```{r}
+inputlinear <- function(file=paste(dataDIR,"2016/2016-05-31 Lake Erie.xlsx",
+                             sep="/"), testnum=79){
+  df1 <- read_excel(file, col_names=F) # Read in data 
+  
+  # Find row/col placement of "Sample ID"
+  FindSampleID<-df1[1:50, 1:15]
+  tmp<-FindSampleID=="Sample ID"
+  FindSampleIDRow<-apply(FindSampleID, 1, function(x) return (sum(!is.na(x)&x=="Sample ID"|!is.na(x)&x=="flickerstick"))) #Find Row with Sample ID 
+  IDrow<-1:50 #Which rows to search in
+  SampleIDrow<-IDrow[FindSampleIDRow==1] # Row placement of Sample ID 
+  IDcol<-1:15 #Which columns to search in
+  FindSampleIDCol<-apply(FindSampleID, 2, function(x) return (sum(!is.na(x)&x=="Sample ID"|!is.na(x)&x=="flickerstick"))) #find col with Sample ID
+  SampleIDcol<-IDcol[FindSampleIDCol==1] # Column placement of Sample ID
+  
+  #Find column placements of vol water filtered, resuspension vol, dilution factor, and reps 1 and 2 for the samples. Row placement of Sample ID is same for reps, but SampleIDrow is -1 row placement of the other variables b/c of how the data sheet columns are labeled 
+  numcols<-dim(df1)[2]
+  temps<-1:numcols
+
+  tmp<-temps[df1[(SampleIDrow-1), 1:numcols]=="Volume of water"]
+  filtercol<-tmp[!is.na(tmp)] # Column where volume filtered are
+
+  tmp<-temps[df1[(SampleIDrow-1), 1:numcols]=="Resuspention"]
+  resuspcol<-tmp[!is.na(tmp)] # Column where resuspension volumes are
+
+  tmp<-temps[df1[SampleIDrow, 1:numcols]=="factor"] #There are two columns with "Dilution" as the first title--"factor" is unique to dilution factor and is in the cell beneath "dilution". The title "factor" is in same row as sample ID 
+  dlfcol<-tmp[!is.na(tmp)] # Column where dilution factors are
+
+  tmp<-temps[df1[SampleIDrow, 1:numcols]=="Concentration (ng/mL)"] # Full column title consists of two rows "Microcystin Concentration (ng/mL)"
+  concCol<-tmp[!is.na(tmp)][1] # Column where Total Microcystin concentration is. Only read in the first instance where column is titled.
+  
+  # tmp<-temps[df1[SampleIDrow, 1:numcols]=="ppb (ng/mL)"] # Full column title consists of two rows "Estimated ppb (ng/mL)"
+  # concControl<-tmp[!is.na(tmp)] # Column where "ppb (ng/mL)" is which is the concentration measurements we want to use for controls & blanks
+
+  
+  tmp<-temps[df1[SampleIDrow, 1:numcols]=="rep 1"]
+  rep1col<-tmp[!is.na(tmp)] # Column where reps 1 are
+
+  tmp<-temps[df1[SampleIDrow, 1:numcols]=="rep 2"]
+  rep2col<-tmp[!is.na(tmp)] # Column where reps 2 are
+
+#Find row/col placement for rep 1 for the standard solutions (rep 2 will be same row, +1 col)
+FindStnd<-df1[1:15, 1:10]
+  tmp<-FindStnd=="rep1"
+  findRowStnd<-apply(FindStnd, 1, function(x) return (sum(!is.na(x)&x=="rep1"))) #Find Row with Standard rep 1
+  rowStnd<-1:15 #Which rows to search in
+  Stndrow<-rowStnd[findRowStnd==1] # Row placement of Sample ID--same placement for all other variables 
+  colStnd<-1:10 #Which columns to search in
+  findColStnd<-apply(FindStnd, 2, function(x) return (sum(!is.na(x)&x=="rep1"))) #find col with 
+  Stndcol<-colStnd[findColStnd==1] # Column placement of Sample ID
+
+  # Set up df for standard info.
+  
+     stnd <- as.character(c("Standard 1", "Standard 2", "Standard 3", "Standard 4", "Standard 5", "Standard 6")) ## Create names for the 6 standards
+     stnd<-as.data.frame(stnd)
+     names(stnd)[1] <- "SampleID" ## Rename column 
+     stnd<-stnd%>%add_column("Resusp" = 1) ## Add new column for dilution factors (all values are 1)
+     stnd<-stnd%>%add_column("VolFilter" = 1) ## Add new column for vol. of water filtered (all values are 1)
+     stnd<-stnd%>%add_column(dLF = 1) ## Add new column for dilution factors (all values are 1)
+     stndreps <- as.numeric(unlist(df1[(Stndrow+1):(Stndrow+6), Stndcol:(Stndcol+1)])) ## read in rep 1 and 2
+     stndreps<-as.data.frame(stndreps)
+     names(stndreps)[1]<-"ABS"
+     stnddf<-cbind(stnd, stndreps) # Combine standard reps with standard df with all other variables
+     stnddf$NOAAconc<-NA
+     
+     # Set up df for sample info. 
+     
+     SampID <- as.character(unlist(df1[-(1:SampleIDrow), SampleIDcol])) ## Read in sample ID names
+     VFilter<-as.numeric(unlist(df1[-(1:SampleIDrow), filtercol])) ## Read in vol. water filtered
+     Resuspension<-as.numeric(unlist(df1[-(1:SampleIDrow), resuspcol])) ## Read in resuspension vol. for the samples
+     dilution<-as.numeric(unlist(df1[-(1:SampleIDrow), dlfcol])) # Read in dilution factors
+     #dilution[dilution==0]<-1 ## replace 0's with 1's
+     #dilution[is.na(dilution)] <- 1 ## Replace NAs with 1
+     Conc<-as.numeric(unlist(df1[-(1:SampleIDrow), concCol])) ## Read in Total Microcystin concentration
+     df2<-data.frame(SampleID=SampID, VolFilter=VFilter, Resusp=Resuspension, dLF=dilution, NOAAconc=Conc)
+     sampreps <- as.numeric(unlist(df1[-(1:SampleIDrow), rep1col:rep2col])) ## read in sample reps 1 and 2
+     sampreps<-as.data.frame(sampreps)
+     names(sampreps)[1]<-"ABS"
+     df3<-cbind(df2, sampreps) ## combine reps df and sample df with other variables
+     df3<-rbind(stnddf, df3) # Combine standard df and samples df
+     df3<- subset(df3, SampleID!= "NA") #remove rows where Sample ID=NA
+     df3<-subset(df3, ABS!="NA")
+    
+     # Calculate conversion factor
+     df3$conversionFactor<-(df3$`Resusp`* df3$dLF)/df3$`VolFilter` # resuspension vol * dlf/vol. filtered
+     df3$conversionFactor[is.na(df3$conversionFactor)| df3$conversionFactor==0] <-1
+     
+     df3<-df3%>%add_column(conc = NA) ## Add new column for concentrations setting all cells to NA (we will only need concentrations for the standards)
+     
+    df3$conc[df3$SampleID == "Standard 1"] <- 0
+    df3$conc[df3$SampleID == "Standard 2"] <- 0.15
+    df3$conc[df3$SampleID == "Standard 3"] <- 0.4
+    df3$conc[df3$SampleID == "Standard 4"] <- 1
+    df3$conc[df3$SampleID == "Standard 5"] <- 2
+    df3$conc[df3$SampleID == "Standard 6"] <- 5
+   
+    df3$Test<-testnum
+    
+    df4<-df3%>%filter(!grepl('control|Control', SampleID))
+    
+    df5<-df3%>%filter(grepl('control|Control', SampleID))
+    
+    if (nrow(df5)>=1) {
+ df5$SampleID<-"Control"
+} else {
+df5
+}
+
+    df6<-rbind(df4, df5)
+    df6<-df6%>%select(SampleID, ABS, conc, conversionFactor, Test, NOAAconc)
+    names(df6)<-c("SampleID", "Absorbance", "Concentration","Dilution","Test", "NOAAconc") # Dilution = conversion factor
+    #df6[is.na(df6$Dilution) , "Dilution" ]<-1 # if conversion factor is NA, change to 1
+    df6$SampleID2<-paste(df6$SampleID, round(df6$Dilution, digits = 4))
+    print(df6)
+    return(df6)
+}
+
+inputlinear()
+
+lineardata<-list()
+for (i in 1:length(GLERLdata1)){
+    print(paste(i, " of ", length(GLERLdata1), ":", GLERLdata1[i], sep=""))
+    lineardata[[i]]<-inputlinear(file=paste(dataDIR, GLERLdata1[i], sep="/"), testnum=i)
+  
+}
+
+save(lineardata, file="all_NOAA_linear.RData")
+load("all_NOAA_linear.RData")
+```
+
+The following code reads in and organizes the NOAA ELISA data sheets that used the nonlinear curve (131 sheets total, 2012-5-15 through 2016-7-18 and 2015-08-31).  We read in sample ID, absorbance (2 reps for each sample), resuspension vol, dlf, vol. filtered, and the final concentrations of the unknowns that NOAA estimated after running the test. We calculated the conversion factor for the dilutions. The equation for this is:
+
+Conversion factor for nonlinear templates= resusp vol * vol ext * dlf/ vol filtered
+
+We also added a column for test number to each data sheet (84 - 131)
+```{r}
+inputnonlinear <- function(file=paste(dataDIR,"2021/2021-07-13_1_elisa_hk.xls",
+                             sep="/"), testnum=28){
+  df <- read_excel(file, col_names=F, range = cell_cols("A:Z"))
+
+  #Determine where the start of the ABs data is
+  FindA<-df[1:10, 1:10]
+  tmp<-FindA=="A"
+  findRow<-apply(FindA, 1, function(x) return (sum(!is.na(x)&x=="A"))) #Find Row with A
+  colrowA<-1:10
+  Arow<-colrowA[findRow==1] # Row placement of A
+  findCol<-apply(FindA, 2, function(x) return (sum(!is.na(x)&x=="A"))) #find col with 
+  Acol<-colrowA[findCol==1] # Column placement of A
+  
+  #Determine the location of the Sample ID column
+  FindID<-df[1:50, 1:10]
+  tmp<-FindID=="Sample ID"
+  findRowID<-apply(FindID, 1, function(x) return (sum(!is.na(x)&x=="Sample ID"))) #Find Row with Sample ID
+  rowID<-1:50
+  Srow<-rowID[findRowID==1] # Row placement of Sample ID--same placement for all other variables 
+  colID<-1:10
+  findColID<-apply(FindID, 2, function(x) return (sum(!is.na(x)&x=="Sample ID"))) #find col with 
+  Scol<-colID[findColID==1] # Column placement of Sample ID
+
+  #Determine the column locations of the other variables
+  numcol<-dim(df)[2]
+  temp<-1:numcol
+
+  tmp<-temp[df[Srow, 1:numcol]=="vol fil"| df[Srow, 1:numcol]=="vol fil (mL)"]
+  Vcol<-tmp[!is.na(tmp)] # Column where volume filtered are
+
+  tmp<-temp[df[Srow, 1:numcol]=="QwikLyse correct" | df[Srow, 1:numcol]=="QwikLyse correct (mL)"]
+  Rcol<-tmp[!is.na(tmp)] # Column where resuspension volumes are
+
+  tmp<-temp[df[Srow, 1:numcol]=="dil correct"]
+  Dcol<-tmp[!is.na(tmp)] # Column where dilution factors are
+
+  tmp<-temp[df[Srow, 1:numcol]=="vol ext"| df[Srow, 1:numcol]=="vol ext (mL)"]
+  Extcol<-tmp[!is.na(tmp)] # Column where volume ext is
+  
+  tmp<-temp[df[Srow, 1:numcol]=="Microcystin (ug/L)"]
+  Ccol<-tmp[!is.na(tmp)][1] # Column where NOAA's concentration estimates are. Only read in the first occurrence
+  
+  #Find row and column of Assay control
+  tmp<-FindID=="Assay control"
+  findRowIDac<-apply(FindID, 1, function(x) return (sum(!is.na(x)&x=="Assay control"))) #Find Row with assay control
+  rowID<-1:50
+  ACrow<-rowID[findRowIDac==1]
+  
+  # Find assay control concentration
+  tmp<-temp[df[(ACrow-1), 1:numcol]=="Conc (ppb)"|df[(ACrow-1), 1:numcol]=="Conc"]
+  concACcol<-tmp[!is.na(tmp)]
+  
+# Set up df for standard info.
+  
+  temp1 <- as.character(c("Standard 1", "Standard 2", "Standard 3", "Standard 4", "Standard 5", "Standard 6")) ## Create names for the 6 standards
+  temp1<-as.data.frame(temp1)
+  names(temp1)[1] <- "SampleID" ## Rename column 
+  temp1<-temp1%>%add_column("Resusp" = 1) ## Add new column for dilution factors (all values are 1)
+  temp1<-temp1%>%add_column("VolFilter" = 1) ## Add new column for vol. of water filtered (all values are 1)
+  temp1<-temp1%>%add_column(VolExt = 1) # Add new column for vol ext
+  temp1<-temp1%>%add_column(dLF = 1) ## Add new column for dilution factors (all values are 1)
+  temp1$NOAAconc<-NA
+     
+# Set up df for sample info. 
+     
+  SampleID <- as.character(unlist(df[-(1:Srow), Scol])) ## Read in rows with sample ID names
+  VolFilter<-as.numeric(unlist(df[-(1:Srow), Vcol])) ## Read in vol. water filtered
+  Resusp<-as.numeric(unlist(df[-(1:Srow), Rcol])) ## Read in resuspension vol. for the samples
+  VolExt<-as.numeric(unlist(df[-(1:Srow), Extcol])) ## Read in vol ext for the samples
+  dLF<-as.numeric(unlist(df[-(1:Srow), Dcol])) # Read in dilution factors
+ # dLF[dLF==0]<-1 ## replace 0's with 1's
+#  dLF[is.na(dLF)] <- 1 ## Replace NAs with 1
+  NOAAconc<-as.numeric(unlist(df[-(1:Srow), Ccol])) ## Read in NOAA concentrations
+     
+# Reading in the measurements
+    
+  standards1<-as.numeric(unlist(df[(Arow+1):(Arow+7), Acol+1])) ## Standard ABs from column 1
+  standards1<-as.data.frame(standards1)
+  names(standards1)[1] <- "ABS"
+  standards2<-as.numeric(unlist(df[Arow:(Arow+4), Acol+2])) ## Standard ABs from column 2
+  standards2<-as.data.frame(standards2)
+  names(standards2)[1] <- "ABS"
+  
+    
+  samples<-as.numeric(unlist(df[Arow:(Arow+7), (Acol+3):(Acol+14)])) ## most Sample Abs are from   columns 3-12. One data sheet (2019-8-5) has two extra columns of abs that need to get read in.
+  samples<-as.data.frame(samples)
+  samples <- subset(samples, !is.na(samples)) ## Remove rows where ABs is 0 (no measurements taken)
+  samples <- subset(samples, !samples==0) ## Remove rows where ABS is input as 0
+  names(samples)[1] <- "ABS"
+    
+    #Read in control ABS and create df with all other variables so that we can rbind these data to the final df
+  controlABS<-as.numeric(unlist(df[(Arow+5):(Arow+6), Acol+2])) ## Standard ABs from column 2
+  controlABS<-as.data.frame(controlABS)
+  names(controlABS)[1] <- "ABS"
+  controlABS$SampleID<-"Control"
+  controlABS<-controlABS[,c(2,1)]
+  controlABS$VolFilter<-1
+  controlABS$Resusp<-1
+  controlABS$VolExt<-1
+  controlABS$dLF<-1
+  controlABS$conversionFactor<-(controlABS$`Resusp`*controlABS$VolExt*controlABS$dLF)/controlABS$`VolFilter`
+  controlABS$conc<-NA
+  controlABS$NOAAconc<-as.numeric(unlist(df[ACrow, concACcol])) # read in estimated control concentration
+    
+  measurements<-rbind(standards1, standards2, samples) ## Combine all measurements to one data frames
+    
+  numsample<-dim(samples)[1]/2 # Used to make sure only real samples are included in the final df (don't want to read in notes from the data sheet)
+    
+  temp6<-data.frame(SampleID=SampleID[1:numsample], VolFilter=VolFilter[1:numsample], Resusp=Resusp[1:numsample], VolExt=VolExt[1:numsample], dLF=dLF[1:numsample], NOAAconc=NOAAconc[1:numsample]) ## combine all variable dfs for samples
+  tempdf<-rbind(temp1, temp6) ## combine the data frames together (same column names will stack)
+    
+# Add conversion factor calculation/column
+  tempdf$conversionFactor<-(tempdf$`Resusp`*tempdf$VolExt* tempdf$dLF)/tempdf$`VolFilter`
+     
+# Add concentrations column
+  tempdf<-tempdf%>%add_column(conc=NA) ## Add new column for concentrations (only need concentrations for the standards)
+  tempdf$conc[tempdf$SampleID == "Standard 1"] <- 0 ## Input concentration values for the 6 standards
+  tempdf$conc[tempdf$SampleID == "Standard 2"] <- 0.15
+  tempdf$conc[tempdf$SampleID == "Standard 3"] <- 0.4
+  tempdf$conc[tempdf$SampleID == "Standard 4"] <- 1
+  tempdf$conc[tempdf$SampleID == "Standard 5"] <- 2
+  tempdf$conc[tempdf$SampleID == "Standard 6"] <- 5
+    
+  tempdf<-tempdf[rep(seq_len(nrow(tempdf)), each = 2), ] ## duplicate each row because each standard/sample has two measurements
+  
+    
+    
+  final<-cbind(tempdf, measurements) #Combine ABs df with df containing all other variables
+  final<-rbind(final, controlABS)
+  final<-subset(final, SampleID!= "NA") # remove rows w/ sample ID= NA
+  final<-subset(final, ABS!= 450) # remove rows w/ ABS = 450. Not a real absorbance, just values noted on the side of the abs table that get read in
+  
+  final$Test<-testnum+83 # add test number to each data sheet starting from 84
+  
+  final2<-final%>%select(SampleID,ABS,conc, conversionFactor, Test, NOAAconc)
+  names(final2)<-c("SampleID", "Absorbance", "Concentration", "Dilution", "Test", "NOAAconc") # Dilution = the conversion factor
+  
+  final2[is.na(final2$Dilution) , "Dilution" ]<-1
+  
+  final2$SampleID2<-paste(final2$SampleID, round(final2$Dilution, digits = 4))
+return(final2)}
+
+inputnonlinear()
+
+nonlineardata<-list()
+for (i in 1:length(GLERLdata2)){
+    print(paste(i, " of ", length(GLERLdata2), ":", GLERLdata2[i], sep=""))
+    nonlineardata[[i]]<-inputnonlinear(file=paste(dataDIR, GLERLdata2[i], sep="/"), testnum=i)
+}
+
+save(nonlineardata, file="all_NOAA_nonlinear.RData")
+load("all_NOAA_nonlinear.RData")
+```
