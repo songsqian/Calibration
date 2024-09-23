@@ -1,0 +1,1025 @@
+---
+title: "ELISA_manuscript"
+output: html_document
+date: "2023-04-21"
+---
+
+# This file contains all of the r code for the different models used to evaluate NOAA-GLERL's ELISA tests. Code for comparison plots is also included.
+
+```{r, include=FALSE}
+packages<-function(x, repos="http://cran.r-project.org", ...){
+  x<-as.character(match.call()[[2]])
+  if (!require(x,character.only=TRUE)){
+    install.packages(pkgs=x, repos=repos, ...)
+    require(x,character.only=TRUE)
+  }
+}
+
+base <- getwd()
+
+
+packages(tidyverse)
+packages(tikzDevice)
+packages(reshape())
+packages(rv)
+packages(rstan)
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = min(c(parallel::detectCores(), 8)))
+
+nchains <-  min(c(parallel::detectCores(), 8))
+niters <- 50000
+nkeep <- 2500
+nthin <- ceiling((niters/2)*nchains/nkeep)
+```
+
+#Load NOAA Data
+```{r}
+# file names
+load("NOAA_data_names.RData")
+
+# load linear data sheets
+load("all_NOAA_linear.RData")
+
+# load nonlinear data sheets
+load("all_NOAA_nonlinear.RData")
+
+## df for all linear templates 
+NOAA1<-merge_recurse(lineardata[1:83])
+
+## df for all nonlinear templates 
+NOAA2<-merge_recurse(nonlineardata[1:131])
+
+## df for all nonlinear templates 
+NOAA<-rbind(NOAA1, NOAA2)
+
+# change columns names so the sample IDs w/ dilution factors are in column "SampleID"
+names(NOAA)<-c("SampleID2", "Absorbance", "Concentration", "Dilution", "Test", "NOAAconc", "SampleID")
+```
+
+#Models
+7 different models:
+1) back-calculated 6 data points (IFE 5)
+2) back-calculated 12 data points (IFE 12)
+3) Bayesian (non-informative prior; Bayes)
+4) BHM within test (BHM 1)
+5) BHM across test (sequential updating; BHM 2) 
+6) BHM within and across test (sequential updating; BHM 3)
+
+# 2) back-calculated 12 data points (IFE 12)
+Bayesian fitted curve with no non-informative prior - this allows us to quanitfy a realistic uncertainty estimate for all of the coefficients. This still compares to their actual fitting process.
+```{r}
+##########Part 1: Stan models and rstan implementation ###########
+### Default ELISA model -- simulating nonlinear regression
+###  with standard solutions only
+### Stan Model (single test kit)
+### The model: y=th4+(th1-th4)/[1+(x/th3)^(-th2)]
+ELISA1 <- "
+data {
+  int<lower=0> N; // sample size (training data, non-zero)
+  real y[N]; // response data
+  real x[N]; // predictor data
+}
+parameters {
+  real<lower=0> delta;
+  real<lower=0> th1;
+  real<lower=0> th2;
+  real<lower=0> th3;
+  real<lower=0> sigma;
+}
+transformed parameters{
+  real mu[N];
+  real<lower=0> th4;
+  th4 = th1+delta;
+  for (i in 1:N){
+    mu[i] = th4 - delta/(1+(x[i]/th3)^(-th2));
+  }
+}
+model {
+  delta~normal(1,5);
+  th1~normal(0,5);
+  th2~normal(0,5);
+  th3~normal(0,5);
+  target += normal_lpdf(y| mu, sigma);
+}
+"
+stan.fit1 <- stan_model(model_code=ELISA1)
+
+stan.in1 <- function(data = NOAA, chains=nchains){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    y <- data$Absorbance[!temp]
+    x <- data$Concentration[!temp]
+    N <- n-sum(temp)
+    stan.dat <- list(N=N, y=y, x=x)
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(delta = runif(1,0.5,1), th2=runif(1),
+                           th3 = runif(1), th1=runif(1,0,0.2),
+                           sigma = runif(1))
+    parameters <- c("th1", "th2","th3","th4","sigma")
+    return(list(para=parameters, data=stan.dat, inits=inits,
+                n.chains=chains))
+}
+
+test_stan1 <- list()
+for (i in 1:214){
+    print(paste("Test:", i))
+    input.to.stan <- stan.in1(data=NOAA[NOAA$Test==i,])
+    fit2keep <- sampling(stan.fit1, data = input.to.stan$data,
+                         init=input.to.stan$inits,
+                         pars = input.to.stan$para,
+                         iter=niters, thin=nthin,
+                         chains=input.to.stan$n.chains)
+    print(fit2keep)
+    test_stan1[[i]] <- rstan::extract(fit2keep)
+}
+save(test_stan1, file="BC12.RData")
+load("BC12.RData")
+
+plot(test_stan1[[1]]$th1, log(test_stan1[[1]]$sigma))
+## Neal's funnel -- explaining the reason of high levels of
+##  uncertainty when using small sample sizes
+##  Add a case where only five data points were used
+## use the ELISA test data with all known concentrations to
+##  show if the Neal's funnel disappears
+```
+# 1) back-calculated 5 data points (IFE 5)
+```{r}
+## five data point case
+
+NOAA5 <- NOAA[!is.na(NOAA$Concentration), ]
+NOAA5mean <- data.frame(
+    Absorbance=tapply(NOAA5$Absorbance,
+                      paste(NOAA5$SampleID, NOAA5$Test),
+                      mean),
+    Concentration=tapply(NOAA5$Concentration,
+                      paste(NOAA5$SampleID, NOAA5$Test),
+                      mean),
+    Test=tapply(NOAA5$Test,
+                      paste(NOAA5$SampleID, NOAA5$Test),
+                      mean))
+
+stan.in2 <- function(data = NOAA5mean, chains=nchains){
+    Abs0 <- data$Absorbance[data$Concentration==0] 
+    data <- data[data$Concentration!=0,]
+    n <- dim(data)[1]
+    y <- data$Absorbance/Abs0 # divide each non-zero standard solution avg abs by the zero concentration standard solution avg abs
+    x <- data$Concentration
+    stan.dat <- list(N=n, y=y, x=x)
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(delta = runif(1,0.5,1), th2=runif(1),
+                           th3 = runif(1), th1=runif(1,0,0.2),
+                           sigma = runif(1))
+    parameters <- c("th1", "th2","th3","th4","sigma")
+    return(list(para=parameters, data=stan.dat, inits=inits,
+                n.chains=chains))
+}
+
+test_stan2 <- list() # list for each test
+for (i in 1:214){
+    print(paste("Test:", i))
+    input.to.stan <-
+        stan.in2(data=NOAA5mean[NOAA5mean$Test==i,]) # evaluating by test
+    fit2keep <- sampling(stan.fit1, data = input.to.stan$data,
+                         init=input.to.stan$inits,
+                         pars = input.to.stan$para,
+                         iter=niters, thin=nthin,
+                         chains=input.to.stan$n.chains)
+    print(fit2keep)
+    test_stan2[[i]] <- rstan::extract(fit2keep)
+}
+save(test_stan2, file="BC5.RData")
+load("BC5.RData")
+```
+
+# Predictive uncretainty for IFE 5 and IFE 12
+we extracted uncertainty even though they don't report. the estimate is highly variable. draw random samples from simulation.
+```{r}
+## Predictive uncertainty using inverse function 
+##  The inverse function log(x) = log(th3) - log((th1-y)/(y-th4))/th2
+
+predNOAA<- function(stanFit=test_stan1[[1]],
+                       data=NOAA[NOAA$Test==1&is.na(NOAA$Concentration),],
+                       meanABS=NOAA5mean$Absorbance[NOAA5mean$Concentration==0&NOAA5mean$Test==1],
+                       mn=F){## mn=T -- 5 data points, mn=F -- 12 data points
+    th1rv <- rvsims(stanFit$th1)
+    th2rv <- rvsims(stanFit$th2)
+    th3rv <- rvsims(stanFit$th3)
+    th4rv <- rvsims(stanFit$th4)
+    sigma <- rvsims(stanFit$sigma)
+    if (!mn){
+        data <- data
+        m <- dim(data)[1]/2 # number of rows/2
+        y <- data$Absorbance+rvnorm(mean=0, sd=sigma*sqrt((12+m-4)/(12-4)))
+    } else{
+        indtmp <- paste(data$SampleID, data$Dilution)
+        tmp <- tapply(data$Absorbance, indtmp, mean)
+        data <- data.frame(SampleID=names(tmp), Absorbance=tmp,
+                           Dilution=tapply(data$Dilution, indtmp, mean))
+        m <- dim(data)[1]/2 # number of rows/2
+        y <- data$Absorbance/meanABS+rvnorm(mean=0,
+                                            sd=sigma*sqrt((5+m-4)/(5-4)))
+    }
+    conc_pred <- exp(log(th3rv)-log((th1rv-y)/(y-th4rv))/th2rv)*data$Dilution
+    temp <- summary(conc_pred)
+    temp$SampleID <- data$SampleID
+    temp$Dilution <- data$Dilution
+    return(list(summ=temp, rvs=conc_pred))
+}
+
+### 12 point curve
+pred_summ12 <- list()
+pred_rvs12 <- list()
+for (i in 1:214){
+    temp <- predNOAA(stanFit=test_stan1[[i]],
+                       data=NOAA[NOAA$Test==i&is.na(NOAA$Concentration),],
+                       meanABS=NOAA5mean$Absorbance[NOAA5mean$Concentration==0&NOAA5mean$Test==i],
+                       mn=F)
+    pred_summ12[[i]] <- temp$summ
+    pred_rvs12[[i]] <- temp$rvs
+}
+
+### 5 point curve 
+pred_summ5 <- list()
+pred_rvs5 <- list()
+for (i in 1:214){
+    temp <- predNOAA(stanFit=test_stan2[[i]],
+                               data=NOAA[NOAA$Test==i&is.na(NOAA$Concentration),],
+                               meanABS=NOAA5mean$Absorbance[NOAA5mean$Concentration==0&NOAA5mean$Test==i],
+                               mn=T)
+    pred_summ5[[i]] <- temp$summ
+    pred_rvs5[[i]] <- temp$rvs
+}
+
+par(mar=c(3,3,1,0), mgp=c(1.25,0.125,0), las=1, tck=-0.01)
+boxplot(log(pred_summ12[[5]]$sd), log(pred_summ5[[5]]$sd),
+        names=c("$n=12$", "$n=5$"), ylab="log standard deviation")
+
+save(pred_summ12, file="pred_summBC12.RData")
+save(pred_rvs12, file="pred_rvsBC12.RData")
+save(pred_summ5, file="pred_summBC5.RData")
+save(pred_rvs5, file="pred_rvsBC5.RData")
+
+load("pred_summBC12.RData")
+load("pred_rvsBC12.RData")
+load("pred_summBC5.RData")
+load("pred_rvsBC5.RData")
+```
+
+#3) Bayesian (non-informative prior; Bayes)
+Bayesian estimation with no hierarchical structure.
+```{r}
+### Default ELISA model with water samples
+###    unknown concentrations estimated using MLE
+### Stan Model (single test kit)
+### The model: y=th4+(th1-th4)/[1+(x/th3)^(-th2)]
+
+ELISA2 <- "
+data {
+  int<lower=0> N; // sample size (training data, non-zero)
+  int<lower=0> M; //observed ODs (for estimating concentration)
+  real y[N]; // response data
+  real x[N]; // predictor data
+  real y0[M]; // test data response
+  int MM; //unique samples
+  int ws[M]; //unique water samples
+}
+parameters {
+  real<lower=0> delta;
+  real<lower=0> th1;
+  real<lower=0> th2;
+  real<lower=0> th3;
+  real<lower=0> sigma;
+  vector[MM] logx0;
+}
+transformed parameters{
+  real mu[N];
+  real mu0[M];
+  vector<lower=0>[MM] x0;
+  real<lower=0> th4;
+  th4 = th1+delta;
+  x0 = exp(logx0);
+  for (i in 1:N){
+    mu[i] = th4 - delta/(1+(x[i]/th3)^(-th2));
+  }
+  for (i in 1:M){
+    mu0[i] = th4 - delta/(1+((x0[ws[i]])/th3)^(-th2));
+  }
+}
+model {
+  logx0 ~ normal(0,2.5); // non-informative prior for all concentration value (no hierarchical structure). Centering logx0 at 0.
+  delta~normal(1,1);
+  th1~normal(0,1);
+  th2~normal(0,5);
+  th3~normal(0,5);
+  target += normal_lpdf(y| mu, sigma);
+  target += normal_lpdf(y0| mu0, sigma);
+}
+"
+stan.fit2 <- stan_model(model_code=ELISA2)
+
+stan.in3 <- function(data = NOAA, chains=nchains){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    y <- data$Absorbance[!temp]
+    x <- data$Concentration[!temp]
+    N <- n-sum(temp)
+    M <- sum(temp)
+    y0 <- data$Absorbance[temp]
+    wsC<-ordered(data$SampleID[temp])
+    ws <- as.numeric(wsC)
+    stan.dat <- list(N=N, M=M, MM=max(ws), y=y, x=x,
+                     y0=y0, ws=ws)
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(delta = runif(1,0.5,1), th2=runif(1),
+                           th3 = runif(1), th1=runif(1,0,0.1),
+                           logx0 = rnorm(max(ws)),
+                           sigma = runif(1))
+    parameters <- c("th1","th2","th3","th4","sigma","x0")
+    return(list(para=parameters, data=stan.dat, inits=inits,
+              n.chains=chains, ControlSample=(1:max(ws))[levels(wsC)=="Control 1"]))
+}
+
+test_stanMLE1 <- list()
+controlS <- numeric()
+for (i in 1:214){
+    print(paste("Test:", i))
+    input.to.stan <- stan.in3(data=NOAA[NOAA$Test==i,])
+    if(length(input.to.stan$ControlSample)==0) # added 8/2/22
+    controlS[i]<-0
+    else
+    controlS[i] <- input.to.stan$ControlSample
+}
+for (i in 1:214){
+    print(paste("Test:", i))
+    input.to.stan <- stan.in3(data=NOAA[NOAA$Test==i,])
+    fit2keep <- sampling(stan.fit2, data = input.to.stan$data,
+                         init=input.to.stan$inits,
+                         pars = input.to.stan$para,
+                         iter=niters, thin=nthin,
+                         chains=input.to.stan$n.chains)
+    print(fit2keep)
+    test_stanMLE1[[i]] <- rstan::extract(fit2keep)
+    if(length(input.to.stan$ControlSample)==0) # added 8/2/22
+    controlS[i]<-0
+    else
+    controlS[i] <- input.to.stan$ControlSample
+}
+save(test_stanMLE1, file="Bayes.RData")
+load("Bayes.RData")
+```
+
+# 4) BHM within test (BHM 1)
+hierarchical model estimating water sample. hierarchical structure imposed on log concentration.
+
+We estimate water samples. We find the average of the water samples. We center them around the average (like the baseball example). Large concentrations must be diluted to fall within the curve
+```{r}
+### Default ELISA model with water samples
+### unknown concentrations estimated using hierarchical model
+### Stan Model (single test kit)
+### The model: y=th4+(th1-th4)/[1+(x/th3)^(-th2)]
+
+ELISA3 <- "
+data {
+  int<lower=0> N; // sample size (training data, non-zero)
+  int<lower=0> M; //observed ODs (for estimating concentration)
+  real y[N]; // response data
+  real x[N]; // predictor data
+  real y0[M]; // test data response
+  int MM; //unique samples
+  int ws[M]; //unique water samples
+}
+parameters {
+  real<lower=0> delta;
+  real<lower=0> th1;
+  real<lower=0> th2;
+  real<lower=0> th3;
+  real<lower=0> sigma;
+  vector[MM] logx0;
+  real<lower=0> x0sig;
+  real x0mu;
+}
+transformed parameters{
+  vector[N] mu;
+  vector[M] mu0;
+  vector<lower=0>[MM] x0;
+  real<lower=0> th4;
+  x0 = exp(logx0);
+  th4 = th1+delta;
+  for (i in 1:N){
+    mu[i] = th4 - delta/(1+(x[i]/th3)^(-th2));
+  }
+  for (i in 1:M){
+    mu0[i] = th4 - delta/(1+((x0[ws[i]])/th3)^(-th2)); 
+  }
+}
+model {
+  x0mu ~ normal(0, 2.5); // non-informative prior for log conc mean
+  x0sig ~ normal(0, 2.5); // non-informative prior for log conc variance
+  logx0 ~ normal(x0mu, x0sig); // not centering log x0 at 1, instead center of all of the x0 means. 
+  
+  delta~normal(1,1);
+  th1~normal(0,1); // th1 can't be too big so we constrain the prior a bit
+  th2~normal(0,5);
+  th3~normal(0,5);
+  target += normal_lpdf(y| mu, sigma); // mu is provided by data
+  target += normal_lpdf(y0| mu0, sigma); // mu is entered by parameter we need to estimate
+}
+"
+stan.fit3 <- stan_model(model_code=ELISA3)
+
+stan.in4 <- function(data = NOAA, chains=nchains){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    y <- data$Absorbance[!temp]
+    x <- data$Concentration[!temp]
+    N <- n-sum(temp)
+    M <- sum(temp)
+    y0 <- data$Absorbance[temp]
+    wsC <- ordered(data$SampleID[temp])
+    ws <- as.numeric(wsC)
+    stan.dat <- list(N=N, M=M, MM=max(ws), y=y, x=x,
+                     y0=y0, ws=ws)
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(delta = runif(1, 0.5, 1), th2=runif(1, 0.4, 0.6),
+                           th3 = runif(1, 0.3, 0.7), th1=runif(1, 0, 0.1),
+                           logx0 = rnorm(max(ws)),
+                           sigma = runif(1), x0mu=rnorm(1), x0sig=runif(1))
+    parameters <- c("th1", "th2","th3","th4","sigma","x0", "x0mu","x0sig")
+    return(list(para=parameters, data=stan.dat, inits=inits, n.chains=chains,
+                ControlSample=(1:max(ws))[levels(wsC)=="Control 1"]))
+}
+
+test_stanBHM1 <- list()
+for (i in 1:214){
+    print(paste("Test:", i))
+    input.to.stan <- stan.in4(data=NOAA[NOAA$Test==i,])
+    fit2keep <- sampling(stan.fit3, data = input.to.stan$data,
+                         init=input.to.stan$inits,
+                         pars = input.to.stan$para,
+                         iter=niters, thin=nthin,
+                         chains=input.to.stan$n.chains)
+    print(fit2keep)
+    test_stanBHM1[[i]] <- rstan::extract(fit2keep)
+}
+save(test_stanBHM1, file="BHM1.RData")
+load("BHM1.RData") 
+
+print(test_stanBHM1[[1]])
+plot(test_stanBHM1[[1]]$x0mu, test_stanBHM1[[1]]$x0sig) 
+```
+
+# load priors - established using the first 9 tests. File with this code is called 'ELISA_BHM_Prior'
+
+```{r}
+load("BHM_Prior.RData")
+```
+#5) BHM across test (sequential updating; BHM 2), not sharing residual variance across tests
+hierarchical structure only across test curve coefficients
+```{r}
+### Sequential updating ELISA model with water samples
+### unknown concentrations estimated using hierarchical model (across test only)
+### The model: y=th4+(th1-th4)/[1+(x/th3)^(-th2)]
+
+ELISA5 <- "
+data {
+  int<lower=0> N; // sample size (training data, non-zero)
+  int<lower=0> M; //observed ODs (for estimating concentration)
+  real y[N]; // response data
+  real x[N]; // predictor data
+  real y0[M]; // test data response
+  int MM; //unique samples
+  int ws[M]; //unique water samples
+  real minABS; //minimum observed absorbance
+
+  real deltamu0; //prior means
+  real th1mu0;
+  real th2mu0;
+  real th3mu0;
+  real<lower=0> deltan0; // prior lambda
+  real<lower=0> th1n0;
+  real<lower=0> th2n0;
+  real<lower=0> th3n0;
+  real<lower=0> deltalpha; // prior alpha
+  real<lower=0> th1alpha;
+  real<lower=0> th2alpha;
+  real<lower=0> th3alpha;
+  real<lower=0> deltabeta; // prior beta
+  real<lower=0> th1beta;
+  real<lower=0> th2beta;
+  real<lower=0> th3beta;
+  real<lower=0> aa; // prior a (sigma_y)
+  real<lower=0> bb; // prior b
+}
+parameters {
+  real<lower=0> delta;
+  real<upper=minABS> logth1;
+  real<lower=0> th2;
+  real<lower=0> th3;
+  real<lower=0> sig2;
+  vector[MM] logx0;
+  real mu_dlt;
+  real<lower=0> sig2_dlt;
+  real mu_th1;
+  real<lower=0> sig2_th1;
+  real mu_th2;
+  real<lower=0> sig2_th2;
+  real mu_th3;
+  real<lower=0> sig2_th3;
+}
+transformed parameters{
+  vector[N] mu;
+  vector[M] mu0;
+  real th1;
+  real<lower=0> th4;
+  vector<lower=0>[MM] x0;
+  x0 = exp(logx0);
+  th1 = exp(logth1);
+  th4 = th1+delta;
+  for (i in 1:N){
+    mu[i] = th4 - delta/(1+(x[i]/th3)^(-th2));
+  }
+  for (i in 1:M){
+    mu0[i] = th4 - delta/(1+(x0[ws[i]]/th3)^(-th2));
+  }
+}
+model {
+  logx0~normal(0, 2.5);
+
+  sig2 ~ inv_gamma(aa, bb);
+  sig2_dlt ~ inv_gamma(deltalpha, deltabeta);
+  mu_dlt ~ normal(deltamu0, sqrt(sig2_dlt/deltan0));
+  sig2_th1 ~ inv_gamma(th1alpha, th1beta);
+  mu_th1 ~ normal(th1mu0, sqrt(sig2_th1/th1n0));
+  sig2_th2 ~ inv_gamma(th2alpha, th2beta);
+  mu_th2 ~ normal(th2mu0, sqrt(sig2_th2/th2n0));
+  sig2_th3 ~ inv_gamma(th3alpha, th3beta);
+  mu_th3 ~ normal(th3mu0, sqrt(sig2_th3/th3n0));
+
+  delta~normal(mu_dlt,sqrt(sig2_dlt)); // the difference
+  logth1~normal(mu_th1, sqrt(sig2_th1)); // th1 must be bigger than zero bc it is the minimum abs. That is why it is log.
+  th2~normal(mu_th2, sqrt(sig2_th2)); // shape
+  th3~normal(mu_th3, sqrt(sig2_th3)); // mid 
+
+  target += normal_lpdf(y| mu, sqrt(sig2));
+  target += normal_lpdf(y0| mu0, sqrt(sig2));
+}
+"
+
+stan.fit6 <- stan_model(model_code=ELISA5)
+
+stan.in7 <- function(data = NOAA[NOAA$Test==1,], chains=nchains,
+                     Dstan, th1stan, th2stan, th3stan, sig2stan){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    tmp1 <- data[!temp,]
+    tmp2 <- data[temp&data$Absorbance<100,]
+    test1 <- as.numeric(ordered(tmp1$Test))
+    y <- tmp1$Absorbance
+    x <- tmp1$Concentration
+    N <- dim(tmp1)[1]
+    M <- dim(tmp2)[1]
+    y0 <- tmp2$Absorbance
+    wsC <- ordered(paste(tmp2$Test,tmp2$SampleID))
+    wsLevels <- levels(wsC)
+    tmpp<-str_detect(wsLevels, "Control")
+    ws <- as.numeric(wsC)
+    stan.dat <- list(N=N, M=M, MM=max(ws), y=y, x=x,
+                     y0=y0, ws=ws, minABS=log(min(c(y0,y))),
+                     deltamu0=Dstan$mu0, th1mu0=th1stan$mu0,
+                     th2mu0=th2stan$mu0, th3mu0=th3stan$mu0,
+                     deltan0=Dstan$lambda, th1n0=th1stan$lambda,
+                     th2n0=th2stan$lambda, th3n0=th3stan$lambda,
+                     deltalpha=Dstan$alpha, th1alpha=th1stan$alpha,
+                     th2alpha=th2stan$alpha, th3alpha=th3stan$alpha,
+                     deltabeta=Dstan$beta, th1beta=th1stan$beta,
+                     th2beta=th2stan$beta, th3beta=th3stan$beta,
+                     aa=0.001, bb=0.001) # not sharing residual variance 
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(zdelta=runif(1,0.5,1), zth1=runif(1,0,0.1),
+                           zth2=runif(1,0.4,0.6), zth3=runif(1,0.3,0.7),
+                           sig2=runif(1), logx0=rnorm(max(ws)),
+                           mu_dlt=runif(1), sig2_dlt=runif(1),
+                           mu_th1=runif(1), sig2_th1=runif(1),
+                           mu_th2=runif(1), sig2_th2=runif(1),
+                           mu_th3=runif(1), sig2_th3=runif(1))
+
+    parameters <- c("th1", "th2","th3","th4","sig2","x0",
+                    "mu_dlt", "sig2_dlt", "mu_th1",
+                    "sig2_th1", "mu_th2", "sig2_th2", "mu_th3", "sig2_th3")
+    return(list(para=parameters, data=stan.dat, inits=inits, n.chains=chains,
+                ControlSample=(1:max(ws))[tmpp], samplenames=wsLevels, wsID=1:max(ws)))
+}
+
+prior_pars_NIG <- function(mus, sigs2){
+  Ex <- mean(mus)
+  Vx <- sd(mus)^2
+  Esig2 <- mean(sigs2)
+  Vsig2 <- sd(sigs2)^2
+  return(list(mu0=Ex, beta=Esig2*(1+Esig2^2/Vsig2),
+              alpha=2+Esig2^2/Vsig2, lambda=Esig2/Vx))
+}
+
+prior_pars_IG <- function(sig2){
+    Esig2 <- mean(sig2)
+    Vsig2 <- sd(sig2)^2
+    return(list(alpha=2+Esig2^2/Vsig2, beta=Esig2*(1+Esig2^2/Vsig2)))
+}
+
+sig2_stan <- prior_pars_IG(test_stanBHM2$sigma^2)
+D_stan <- prior_pars_NIG(test_stanBHM2$mu_dlt, test_stanBHM2$sig_dlt^2)
+th1_stan <- prior_pars_NIG(test_stanBHM2$mu_th1, test_stanBHM2$sig_th1^2)
+th2_stan <- prior_pars_NIG(test_stanBHM2$mu_th2, test_stanBHM2$sig_th2^2)
+th3_stan <- prior_pars_NIG(test_stanBHM2$mu_th3, test_stanBHM2$sig_th3^2)
+
+seqBHM2 <- list()
+seqBHM2_all<-list()
+BHM2_IDs<-list()
+for (i in 10:214){
+    print(paste("Test: ", i))
+          input.to.stan <- stan.in7(data=NOAA[NOAA$Test==i,],
+                              Dstan=D_stan, th1stan=th1_stan,
+                              th2stan=th2_stan, th3stan=th3_stan,
+                              sig2stan=sig2_stan)
+
+    fit2keep <- sampling(stan.fit6, data = input.to.stan$data,
+                         init=input.to.stan$inits,
+                         pars = input.to.stan$para,
+                         iter=niters, thin=nthin,
+                         chains=input.to.stan$n.chains)
+    print(fit2keep)
+    seqBHM2_all[[i]]<-fit2keep
+    seqBHM2[[i]]<- rstan::extract(fit2keep)
+    sig2_stan <- prior_pars_IG(seqBHM2[[i]]$sig2)
+    D_stan <- prior_pars_NIG(seqBHM2[[i]]$mu_dlt, seqBHM2[[i]]$sig2_dlt)
+    th1_stan <- prior_pars_NIG(seqBHM2[[i]]$mu_th1, seqBHM2[[i]]$sig2_th1)
+    th2_stan <- prior_pars_NIG(seqBHM2[[i]]$mu_th2, seqBHM2[[i]]$sig2_th2)
+    th3_stan <- prior_pars_NIG(seqBHM2[[i]]$mu_th3, seqBHM2[[i]]$sig2_th3)
+    
+    #save ID names
+    wsEstimate<-cbind(as.data.frame(input.to.stan$wsID, input.to.stan$samplenames))
+    xOD2<-rvsims(as.matrix(as.data.frame(extract(fit2keep, pars="x0"))))
+    wsEstimate<-cbind(wsEstimate, as.data.frame(summary(xOD2))) 
+    wsEstimate<-rownames_to_column(wsEstimate, "SampleID") 
+    BHM2_IDs[[i]]<-wsEstimate
+}
+
+save(seqBHM2, file="BHM2.RData")
+#save(BHM2_IDs, file="BHM2_IDs.RData")
+#save(seqBHM2_all, file="BHM2_seqBHMall.RData")
+load("BHM2.RData")
+#load("BHM2_IDs.RData")
+#load("BHM2_seqBHMall.RData")
+
+```
+
+#6) BHM within and across test (sequential updating; BHM 3), not sharing residual variance across tests
+```{r}
+### Sequential updating ELISA model with water samples
+###    unknown concentrations estimated using hierarchical model
+### Stan Model (single multiple test kit)
+### The model: y=th4+(th1-th4)/[1+(x/th3)^(-th2)]
+
+ELISA6 <- "
+data {
+  int<lower=0> N; // sample size (training data, non-zero)
+  int<lower=0> M; //observed ODs (for estimating concentration)
+  real y[N]; // response data
+  real x[N]; // predictor data
+  real y0[M]; // test data response
+  int MM; //unique samples
+  int ws[M]; //unique water samples
+  real minABS; //minimum observed absorbance
+
+  real deltamu0; //prior means
+  real th1mu0;
+  real th2mu0;
+  real th3mu0;
+  real<lower=0> deltan0; // prior lambda
+  real<lower=0> th1n0;
+  real<lower=0> th2n0;
+  real<lower=0> th3n0;
+  real<lower=0> deltalpha; // prior alpha
+  real<lower=0> th1alpha;
+  real<lower=0> th2alpha;
+  real<lower=0> th3alpha;
+  real<lower=0> deltabeta; // prior beta
+  real<lower=0> th1beta;
+  real<lower=0> th2beta;
+  real<lower=0> th3beta;
+  real<lower=0> aa; // prior a (sigma_y)
+  real<lower=0> bb; // prior b
+}
+parameters {
+  real<lower=0> delta;
+  real<upper=minABS> logth1;
+  real<lower=0> th2;
+  real<lower=0> th3;
+  real<lower=0> sig2;
+  vector[MM] zlogx0;
+  real<lower=0> x0sig;
+  real x0mu;
+  real mu_dlt;
+  real<lower=0> sig2_dlt;
+  real mu_th1;
+  real<lower=0> sig2_th1;
+  real mu_th2;
+  real<lower=0> sig2_th2;
+  real mu_th3;
+  real<lower=0> sig2_th3;
+}
+transformed parameters{
+  vector[N] mu;
+  vector[M] mu0;
+  real th1;
+  real<lower=0> th4;
+  vector<lower=0>[MM] x0;
+  vector[MM] logx0;
+  logx0 = x0mu + x0sig*zlogx0;
+  x0 = exp(logx0);
+  th1=exp(logth1);
+  th4 = th1+delta;
+  for (i in 1:N){
+    mu[i] = th4 - delta/(1+(x[i]/th3)^(-th2));
+  }
+  for (i in 1:M){
+    mu0[i] = th4 - delta/(1+(x0[ws[i]]/th3)^(-th2));
+  }
+}
+model {
+  x0mu ~ normal(0, 2.5);
+  x0sig ~ normal(0, 2.5);
+  zlogx0 ~ std_normal(); // z computational trick
+
+  sig2 ~ inv_gamma(aa, bb);
+  sig2_dlt ~ inv_gamma(deltalpha, deltabeta);
+  mu_dlt ~ normal(deltamu0, sqrt(sig2_dlt/deltan0));
+  sig2_th1 ~ inv_gamma(th1alpha, th1beta);
+  mu_th1 ~ normal(th1mu0, sqrt(sig2_th1/th1n0));
+  sig2_th2 ~ inv_gamma(th2alpha, th2beta);
+  mu_th2 ~ normal(th2mu0, sqrt(sig2_th2/th2n0));
+  sig2_th3 ~ inv_gamma(th3alpha, th3beta);
+  mu_th3 ~ normal(th3mu0, sqrt(sig2_th3/th3n0));
+
+  delta~normal(mu_dlt,sqrt(sig2_dlt));
+  logth1~normal(mu_th1, sqrt(sig2_th1)); // mu_th1 is for logth1--opens up the lower end, doesn't constrain high
+  th2~normal(mu_th2, sqrt(sig2_th2)); // mu_th2 is for th2 itself
+  th3~normal(mu_th3, sqrt(sig2_th3));
+
+  target += normal_lpdf(y| mu, sqrt(sig2));
+  target += normal_lpdf(y0| mu0, sqrt(sig2));
+}
+"
+
+
+stan.fit5 <- stan_model(model_code=ELISA6)
+
+stan.in6 <- function(data = NOAA[NOAA$Test==10,], chains=nchains,
+                     Dstan, th1stan, th2stan, th3stan, sig2stan){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    tmp1 <- data[!temp,]
+    tmp2 <- data[temp,]
+    test1 <- as.numeric(ordered(tmp1$Test))
+    y <- tmp1$Absorbance
+    x <- tmp1$Concentration
+    N <- dim(tmp1)[1]
+    M <- dim(tmp2)[1]
+    y0 <- tmp2$Absorbance
+    wsC <- ordered(paste(tmp2$Test,tmp2$SampleID))
+    wsLevels <- levels(wsC)
+    tmpp<-str_detect(wsLevels, "Control")
+    ws <- as.numeric(wsC)
+    stan.dat <- list(N=N, M=M, MM=max(ws), y=y, x=x,
+                     y0=y0, ws=ws, minABS=log(min(c(y0,y))),
+                     deltamu0=Dstan$mu0, th1mu0=th1stan$mu0,
+                     th2mu0=th2stan$mu0, th3mu0=th3stan$mu0,
+                     deltan0=Dstan$lambda, th1n0=th1stan$lambda,
+                     th2n0=th2stan$lambda, th3n0=th3stan$lambda,
+                     deltalpha=Dstan$alpha, th1alpha=th1stan$alpha,
+                     th2alpha=th2stan$alpha, th3alpha=th3stan$alpha,
+                     deltabeta=Dstan$beta, th1beta=th1stan$beta,
+                     th2beta=th2stan$beta, th3beta=th3stan$beta,
+                     aa=0.001, bb=0.001) # not sharing residual variance
+                     
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(zdelta=runif(1,0.5,1), zth1=runif(1,0,0.1),
+                           zth2=runif(1,0.4,0.6), zth3=runif(1,0.3,0.7),
+                           sig2=runif(1), zlogx0=rnorm(max(ws)),
+                           x0sig=runif(1), x0mu=runif(1),
+                           mu_dlt=runif(1), sig2_dlt=runif(1),
+                           mu_th1=runif(1), sig2_th1=runif(1),
+                           mu_th2=runif(1), sig2_th2=runif(1),
+                           mu_th3=runif(1), sig2_th3=runif(1))
+
+    parameters <- c("th1", "th2","th3","th4","sig2","x0",
+                    "x0mu","x0sig", "mu_dlt", "sig2_dlt", "mu_th1",
+                    "sig2_th1", "mu_th2", "sig2_th2", "mu_th3", "sig2_th3")
+    return(list(para=parameters, data=stan.dat, inits=inits, n.chains=chains,
+                ControlSample=(1:max(ws))[tmpp], samplenames=wsLevels, wsID=1:max(ws)))
+}
+
+prior_pars_NIG <- function(mus, sigs2){
+  Ex <- mean(mus)
+  Vx <- sd(mus)^2
+  Esig2 <- mean(sigs2)
+  Vsig2 <- sd(sigs2)^2
+  return(list(mu0=Ex, beta=Esig2*(1+Esig2^2/Vsig2),
+              alpha=2+Esig2^2/Vsig2, lambda=Esig2/Vx))
+}
+
+prior_pars_IG <- function(sig2){
+    Esig2 <- mean(sig2)
+    Vsig2 <- sd(sig2)^2
+    return(list(alpha=2+Esig2^2/Vsig2, beta=Esig2*(1+Esig2^2/Vsig2)))
+}
+
+sig2_stan <- prior_pars_IG(test_stanBHM2$sigma^2)
+D_stan <- prior_pars_NIG(test_stanBHM2$mu_dlt, test_stanBHM2$sig_dlt^2)
+th1_stan <- prior_pars_NIG(test_stanBHM2$mu_th1, test_stanBHM2$sig_th1^2)
+th2_stan <- prior_pars_NIG(test_stanBHM2$mu_th2, test_stanBHM2$sig_th2^2)
+th3_stan <- prior_pars_NIG(test_stanBHM2$mu_th3, test_stanBHM2$sig_th3^2)
+
+seqBHM3 <- list()
+seqBHM3all<-list()
+BHM3_IDs<-list()
+for (i in 10:214){ # start from test 10 b/c 1-9 is used to create initial priors
+    print(paste("Test: ", i))
+          input.to.stan <- stan.in6(data=NOAA[NOAA$Test==i,],
+                              Dstan=D_stan, th1stan=th1_stan,
+                              th2stan=th2_stan, th3stan=th3_stan,
+                              sig2stan=sig2_stan)
+
+    fit2keep <- sampling(stan.fit5, data = input.to.stan$data,
+                         init=input.to.stan$inits,
+                         pars = input.to.stan$para,
+                         iter=niters, thin=nthin,
+                         chains=input.to.stan$n.chains)
+    print(fit2keep)
+    #j<-i-9
+    seqBHM3all[[i]]<-fit2keep
+    seqBHM3[[i]]<- rstan::extract(fit2keep)
+    sig2_stan <- prior_pars_IG(seqBHM3[[i]]$sig2)
+    D_stan <- prior_pars_NIG(seqBHM3[[i]]$mu_dlt, seqBHM3[[i]]$sig2_dlt)
+    th1_stan <- prior_pars_NIG(seqBHM3[[i]]$mu_th1, seqBHM3[[i]]$sig2_th1)
+    th2_stan <- prior_pars_NIG(seqBHM3[[i]]$mu_th2, seqBHM3[[i]]$sig2_th2)
+    th3_stan <- prior_pars_NIG(seqBHM3[[i]]$mu_th3, seqBHM3[[i]]$sig2_th3)
+    
+    #save ID names
+    wsEstimate<-cbind(as.data.frame(input.to.stan$wsID, input.to.stan$samplenames))
+    xOD2<-rvsims(as.matrix(as.data.frame(extract(fit2keep, pars="x0"))))
+    wsEstimate<-cbind(wsEstimate, as.data.frame(summary(xOD2))) 
+    wsEstimate<-rownames_to_column(wsEstimate, "SampleID") 
+    BHM3_IDs[[i]]<-wsEstimate
+}
+
+save(seqBHM3, file="BHM3.RData")
+#save(BHM3_IDs, file="BHM3_IDs.RData")
+#save(seqBHM3all, file="BHM3_seqBHMall.RData")
+load("BHM3.RData")
+#load("BHM3_IDs.RData")
+#load("BHM3_seqBHMall.RData")
+
+```
+
+# Model comparison plots
+Load model results
+```{r}
+# model 1
+load("BC5.RData") 
+load("pred_summBC5.RData")
+load("pred_rvsBC5.RData")
+# model 2
+load("BC12.RData") 
+load("pred_summBC12.RData")
+load("pred_rvsBC12.RData")
+# model 3
+load("Bayes.RData")
+# model 4
+load("BHM1.RData")
+# model 5
+load("BHM2.RData")
+# model 6
+load("BHM3.RData")
+```
+load in 'controlS' which are needed for the plots. This code comes from the Bayes model.
+```{r}
+stan.in3 <- function(data = NOAA, chains=nchains){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    y <- data$Absorbance[!temp]
+    x <- data$Concentration[!temp]
+    N <- n-sum(temp)
+    M <- sum(temp)
+    y0 <- data$Absorbance[temp]
+    wsC<-ordered(data$SampleID[temp])
+    ws <- as.numeric(wsC)
+    stan.dat <- list(N=N, M=M, MM=max(ws), y=y, x=x,
+                     y0=y0, ws=ws)
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(delta = runif(1,0.5,1), th2=runif(1),
+                           th3 = runif(1), th1=runif(1,0,0.1),
+                           logx0 = rnorm(max(ws)),
+                           sigma = runif(1))
+    parameters <- c("th1","th2","th3","th4","sigma","x0")
+    return(list(para=parameters, data=stan.dat, inits=inits,
+              n.chains=chains, ControlSample=(1:max(ws))[levels(wsC)=="Control 1"]))
+}
+
+controlS <- numeric()
+for (i in 1:214){
+    #print(paste("Test:", i))
+    input.to.stan <- stan.in3(data=NOAA[NOAA$Test==i,])
+    if(length(input.to.stan$ControlSample)==0) # added 8/2/22
+    controlS[i]<-0
+    else
+    controlS[i] <- input.to.stan$ControlSample
+}
+```
+Compare the control estimates for each model bc controls have a known concentration of 0.75.
+```{r}
+## comparing control sample fits
+
+cntrlID <- (1:length(pred_summ12[[1]]))[substring(pred_summ12[[i]]$SampleID, 1, 9)=="Control 1"]
+CntrlMLE12 <- pred_summ12[[1]][cntrlID,]
+CntrlMLErvs12 <- pred_rvs12[[1]][cntrlID]
+
+for (i in 2:214){
+    cntrlID <- (1:length(pred_summ12[[i]]))[substring(pred_summ12[[i]]$SampleID, 1, 9)=="Control 1"]
+    CntrlMLE12 <- rbind(CntrlMLE12[,1:9], pred_summ12[[i]][cntrlID,1:9])
+    CntrlMLErvs12 <- c(CntrlMLErvs12, pred_rvs12[[i]][cntrlID])
+}
+
+cntrlID <- (1:dim(pred_summ5[[1]])[1])[substring(pred_summ5[[1]]$SampleID, 1, 9)=="Control 1"]
+CntrlMLE5 <- pred_summ5[[1]][cntrlID,]
+CntrlMLErvs5 <- pred_rvs5[[1]][cntrlID]
+for (i in 2:214){
+    cntrlID <- (1:dim(pred_summ5[[i]])[1])[substring(pred_summ5[[i]]$SampleID, 1, 9)=="Control 1"]
+    CntrlMLE5 <- rbind(CntrlMLE5[,1:9], pred_summ5[[i]][cntrlID,1:9])
+    CntrlMLErvs5 <- c(CntrlMLErvs5, pred_rvs5[[i]][cntrlID])
+}
+
+##Bayesian models
+# MLE
+CntrlStan1 <- rvsims(test_stanMLE1[[1]]$x0)[controlS[1]]
+for (i in 2:214)
+CntrlStan1 <- c(CntrlStan1, rvsims(test_stanMLE1[[i]]$x0)[controlS[i]])
+
+# within-test only
+CntrlStan3 <- rvsims(test_stanBHM1[[1]]$x0)[controlS[1]]
+for (i in 2:214)
+CntrlStan3 <- c(CntrlStan3, rvsims(test_stanBHM1[[i]]$x0)[controlS[i]])
+
+# across test only sequential BHM (starts from test 10)
+CntrlStanSeq2 <- rvsims(seqBHM2[[10]]$x0)[controlS[10]]
+for (i in 11:214)
+CntrlStanSeq2 <- c(CntrlStanSeq2, rvsims(seqBHM2[[i]]$x0)[controlS[i]])
+
+# within and across test sequential BHM (starts from test 10)
+CntrlStanSeq3 <- rvsims(seqBHM3[[10]]$x0)[controlS[10]]
+for (i in 11:214)
+CntrlStanSeq3 <- c(CntrlStanSeq3, rvsims(seqBHM3[[i]]$x0)[controlS[i]])
+```
+Comparing accuracy (0.75)
+```{r}
+accuracy <- c(median(abs(CntrlStanSeq3-0.75)),
+          median(abs(CntrlStanSeq2-0.75)),
+          median(abs(CntrlStan3-0.75)),
+          median(abs(CntrlStan1-0.75)),
+          median(abs(CntrlMLErvs12-0.75),na.rm=T),
+          median(abs(CntrlMLErvs5-0.75),na.rm=T))
+names(accuracy) <- c("BHM 3","BHM 2" ,"BHM 1",
+                 "Bayes","IFE 12", "IFE 5")
+
+par(mar=c(3, 3, 2, 0.125), mgp=c(1.25,0.25,0), tck=-0.01)
+mlplot(accuracy, xlab="Accuracy", xlim=c(0.08,0.35), main="")
+
+```
+
+save accuracy comparison plot as pdf
+```{r}
+pdf(file = "6model_compare.pdf",   # The directory you want to save the file in
+    width = 10, # The width of the plot in inches
+    height = 7) # The height of the plot in inches
+accuracy <- c(median(abs(CntrlStanSeq3-0.75)),
+          median(abs(CntrlStanSeq2-0.75)),
+          median(abs(CntrlStan3-0.75)),
+          median(abs(CntrlStan1-0.75)),
+          median(abs(CntrlMLErvs12-0.75),na.rm=T),
+          median(abs(CntrlMLErvs5-0.75),na.rm=T))
+names(accuracy) <- c("BHM 3","BHM 2" ,"BHM 1",
+                 "Bayes","IFE 12", "IFE 5")
+
+par(mar=c(3, 3, 2, 0.125), mgp=c(1.25,0.25,0), tck=-0.01)
+mlplot(accuracy, xlab="Accuracy", xlim=c(0.08, 0.35), main="")
+dev.off()
+```
+
+

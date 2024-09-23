@@ -1,0 +1,235 @@
+---
+title: "ELISA_manuscript_plots"
+author: "Sabrina"
+date: '2023-10-03'
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+packages<-function(x, repos="http://cran.r-project.org", ...){
+  x<-as.character(match.call()[[2]])
+  if (!require(x,character.only=TRUE)){
+    install.packages(pkgs=x, repos=repos, ...)
+    require(x,character.only=TRUE)
+  }
+}
+
+base <- getwd()
+
+packages(tidyverse)
+packages(tikzDevice)
+packages(reshape())
+packages(rv)
+packages(rstan)
+
+nchains <-  min(c(parallel::detectCores(), 8))
+niters <- 50000
+nkeep <- 2500
+nthin <- ceiling((niters/2)*nchains/nkeep)
+
+```
+
+This file contains the code to create the two plots using tikzDevice for our ELISA manuscript.
+
+# Standard sample plot
+
+#Load NOAA Data
+```{r}
+# file names
+load("NOAA_data_names.RData")
+
+# load linear data sheets
+load("all_NOAA_linear.RData")
+
+# load nonlinear data sheets
+load("all_NOAA_nonlinear.RData")
+
+## df for all linear templates 
+NOAA1<-merge_recurse(lineardata[1:83])
+
+## df for all nonlinear templates 
+NOAA2<-merge_recurse(nonlineardata[1:131])
+
+## df for all nonlinear templates 
+NOAA<-rbind(NOAA1, NOAA2)
+
+# change columns names so the sample IDs w/ dilution factors are in column "SampleID"
+names(NOAA)<-c("SampleID2", "Absorbance", "Concentration", "Dilution", "Test", "NOAAconc", "SampleID")
+
+```
+
+
+```{r}
+# keep only standard samples
+SS<-NOAA[!is.na(NOAA$Concentration),]
+SS$number<-1:nrow(SS)
+
+SS1<-subset(SS, SampleID2 %in% 'Standard 1') # locate 3 standard 1 samples that are the highest, lowest, and middle absorbances for the 0 concentration sample
+#median(SS1$Absorbance)
+
+SS2<-subset(SS1, number %in% c('775', '1094', '2342')) # Selecting the tests of the largest, middle, and smallest value standard 1 samples
+
+SS3<-subset(SS, Test %in% c('65', '92', '196')) # subset all of the standards from these tests
+
+tmp1<-subset(SS, Test %in% '65')
+tmp1$id<-1
+tmp2<-subset(SS, Test %in% '92')
+tmp2$id<-2
+tmp3<-subset(SS, Test %in% '196')
+tmp3$id<-3
+
+SS3<-rbind(tmp1, tmp2, tmp3)
+
+SS4<-SS[!(SS$Test=="65" | SS$Test=="92"| SS$Test=="196"),]
+SS4$id<-0
+
+SS5<-rbind(SS4, SS3)
+
+##tiff("standard_samples.tiff", units="in", width=3, height=3, res=300)
+ggplot(SS5, aes(x=Concentration, y=Absorbance, group=as.factor(Test))) +
+   geom_jitter(
+    data = SS5[SS5$id == 0, ],
+    col="grey") + geom_point(data = SS5 %>% filter(id %in% '1'), shape=15, size=2)  + geom_point(data = SS5 %>% filter(id %in% '2'), shape=17, size=2) + geom_point(data = SS5 %>% filter(id %in% '3'), shape=18, size=2) + stat_summary(data = SS5 %>% filter(id %in% '1'), geom = "line", fun = mean)+stat_summary(data = SS5 %>% filter(id %in% '2'), geom = "line", fun = mean)+ stat_summary(data = SS5 %>% filter(id %in% '3'), geom = "line", fun = mean)+ theme(legend.position = "none") + scale_color_manual(values = c( "black", "black", "black")) + xlab("Concentration (μg/L)")
+##dev.off()
+```
+Tikz plot
+```{r}
+tikz(file="standardcurve_plot_jitter.tex", # file = name you want to save plot as
+     height=2, width=3, standAlone=T)
+ggplot(SS5, aes(x=Concentration, y=Absorbance, group=as.factor(Test))) +
+   geom_jitter(
+    data = SS5[SS5$id == 0, ],
+    col="grey") + geom_point(data = SS5 %>% filter(id %in% '1'), shape=15, size=2)  + geom_point(data = SS5 %>% filter(id %in% '2'), shape=17, size=2) + geom_point(data = SS5 %>% filter(id %in% '3'), shape=18, size=2) + stat_summary(data = SS5 %>% filter(id %in% '1'), geom = "line", fun = mean)+stat_summary(data = SS5 %>% filter(id %in% '2'), geom = "line", fun = mean)+ stat_summary(data = SS5 %>% filter(id %in% '3'), geom = "line", fun = mean)+ theme(legend.position = "none") + scale_color_manual(values = c( "black", "black", "black"))  + xlab("Concentration ($\\mu$g/L)")
+dev.off()
+```
+
+# 6 model comparison plot
+Load results
+```{r}
+# model 1
+load("BC5.RData") 
+load("pred_summBC5.RData")
+load("pred_rvsBC5.RData")
+# model 2
+load("BC12.RData") 
+load("pred_summBC12.RData")
+load("pred_rvsBC12.RData")
+# model 3
+load("Bayes.RData")
+# model 4
+load("BHM1.RData")
+# model 5
+load("BHM2.RData")
+# model 6
+load("BHM3.RData")
+```
+load in 'controlS' which are needed for the plots. This code comes from the Bayes model.
+```{r}
+stan.in3 <- function(data = NOAA, chains=nchains){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    y <- data$Absorbance[!temp]
+    x <- data$Concentration[!temp]
+    N <- n-sum(temp)
+    M <- sum(temp)
+    y0 <- data$Absorbance[temp]
+    wsC<-ordered(data$SampleID[temp])
+    ws <- as.numeric(wsC)
+    stan.dat <- list(N=N, M=M, MM=max(ws), y=y, x=x,
+                     y0=y0, ws=ws)
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(delta = runif(1,0.5,1), th2=runif(1),
+                           th3 = runif(1), th1=runif(1,0,0.1),
+                           logx0 = rnorm(max(ws)),
+                           sigma = runif(1))
+    parameters <- c("th1","th2","th3","th4","sigma","x0")
+    return(list(para=parameters, data=stan.dat, inits=inits,
+              n.chains=chains, ControlSample=(1:max(ws))[levels(wsC)=="Control 1"]))
+}
+
+controlS <- numeric()
+for (i in 1:214){
+    #print(paste("Test:", i))
+    input.to.stan <- stan.in3(data=NOAA[NOAA$Test==i,])
+    if(length(input.to.stan$ControlSample)==0) # added 8/2/22
+    controlS[i]<-0
+    else
+    controlS[i] <- input.to.stan$ControlSample
+}
+```
+Compare the control estimates for each model bc controls have a known concentration of 0.75.
+```{r}
+## comparing control sample fits
+
+cntrlID <- (1:length(pred_summ12[[1]]))[substring(pred_summ12[[i]]$SampleID, 1, 9)=="Control 1"]
+CntrlMLE12 <- pred_summ12[[1]][cntrlID,]
+CntrlMLErvs12 <- pred_rvs12[[1]][cntrlID]
+
+for (i in 2:214){
+    cntrlID <- (1:length(pred_summ12[[i]]))[substring(pred_summ12[[i]]$SampleID, 1, 9)=="Control 1"]
+    CntrlMLE12 <- rbind(CntrlMLE12[,1:9], pred_summ12[[i]][cntrlID,1:9])
+    CntrlMLErvs12 <- c(CntrlMLErvs12, pred_rvs12[[i]][cntrlID])
+}
+
+cntrlID <- (1:dim(pred_summ5[[1]])[1])[substring(pred_summ5[[1]]$SampleID, 1, 9)=="Control 1"]
+CntrlMLE5 <- pred_summ5[[1]][cntrlID,]
+CntrlMLErvs5 <- pred_rvs5[[1]][cntrlID]
+for (i in 2:214){
+    cntrlID <- (1:dim(pred_summ5[[i]])[1])[substring(pred_summ5[[i]]$SampleID, 1, 9)=="Control 1"]
+    CntrlMLE5 <- rbind(CntrlMLE5[,1:9], pred_summ5[[i]][cntrlID,1:9])
+    CntrlMLErvs5 <- c(CntrlMLErvs5, pred_rvs5[[i]][cntrlID])
+}
+
+##Bayesian models
+# MLE
+CntrlStan1 <- rvsims(test_stanMLE1[[1]]$x0)[controlS[1]]
+for (i in 2:214)
+CntrlStan1 <- c(CntrlStan1, rvsims(test_stanMLE1[[i]]$x0)[controlS[i]])
+
+# within-test only
+CntrlStan3 <- rvsims(test_stanBHM1[[1]]$x0)[controlS[1]]
+for (i in 2:214)
+CntrlStan3 <- c(CntrlStan3, rvsims(test_stanBHM1[[i]]$x0)[controlS[i]])
+
+# across test only sequential BHM (starts from test 10)
+CntrlStanSeq2 <- rvsims(seqBHM2[[10]]$x0)[controlS[10]]
+for (i in 11:214)
+CntrlStanSeq2 <- c(CntrlStanSeq2, rvsims(seqBHM2[[i]]$x0)[controlS[i]])
+
+# within and across test sequential BHM (starts from test 10)
+CntrlStanSeq3 <- rvsims(seqBHM3[[10]]$x0)[controlS[10]]
+for (i in 11:214)
+CntrlStanSeq3 <- c(CntrlStanSeq3, rvsims(seqBHM3[[i]]$x0)[controlS[i]])
+
+```
+Evaluating biasness/accuracy (0.75)
+```{r}
+### using median ###
+
+accuracy <- c(median(abs(CntrlStanSeq3-0.75)),
+          median(abs(CntrlStanSeq2-0.75)),
+          median(abs(CntrlStan3-0.75)),
+          median(abs(CntrlStan1-0.75)),
+          median(abs(CntrlMLErvs12-0.75),na.rm=T),
+          median(abs(CntrlMLErvs5-0.75),na.rm=T))
+names(accuracy) <- c("$BHM_3$","$BHM_2$" ,"$BHM_1$",
+                 "Bayes","$IFE_{12}$", "$IFE_5$")
+
+#tiff("6_models.tiff", units="in", width=4.75, height=3.5, res=300)
+par(mar=c(3, 3, 2, 0.125), mgp=c(1.25,0.25,0), tck=-0.01)
+mlplot(accuracy, xlab="Accuracy",  xlim = c(0.08, 0.35), main="")
+#dev.off
+```
+
+Tikz plot
+```{r}
+tikz(file="6_model_compare.tex", # file = name you want to save plot as
+     height=3, width=3, standAlone=T)
+par(mar=c(3, 3, 2, 1.25), mgp=c(1.25,0.25,0), tck=-0.01)
+mlplot(accuracy, xlab="Accuracy", xlim=c(0.08, 0.35), main="")
+dev.off()
+```
+
