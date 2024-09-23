@@ -1,0 +1,239 @@
+---
+title: "ms1Rscript_NOAA"
+output: pdf_document
+date: '2022-07-29'
+---
+# This file contains R code for establishing the priors used in the BHM2 and BHM3 models. The priors are established using the first 9 tests.
+```{r}
+packages<-function(x, repos="http://cran.r-project.org", ...){
+  x<-as.character(match.call()[[2]])
+  if (!require(x,character.only=TRUE)){
+    install.packages(pkgs=x, repos=repos, ...)
+    require(x,character.only=TRUE)
+  }
+}
+
+base <- getwd()
+
+packages(rv)
+packages(rstan)
+packages(tidyverse)
+packages(tikzDevice)
+packages(reshape())
+
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = min(c(parallel::detectCores(), 8)))
+
+nchains <-  min(c(parallel::detectCores(), 8))
+niters <- 50000
+nkeep <- 2500
+nthin <- ceiling((niters/2)*nchains/nkeep)
+```
+
+Load NOAA Data - the code for organizing the data can be found in the file called "Reading_Data_Sheets.Rmd"
+```{r}
+# file names
+load("NOAA_data_names.RData")
+
+# load linear data sheets
+load("all_NOAA_linear.RData")
+
+# load nonlinear data sheets
+load("all_NOAA_nonlinear.RData")
+
+## df for all linear templates 
+NOAA1<-merge_recurse(lineardata[1:83])
+
+## df for all nonlinear templates 
+NOAA2<-merge_recurse(nonlineardata[1:131])
+
+## df for all nonlinear templates 
+NOAA<-rbind(NOAA1, NOAA2)
+
+#Only keep first nine tests for establishing initial priors
+NOAA<-subset(NOAA, NOAA$Test<10)
+
+# change columns names so the sample IDs w/ dilution factors are in column "SampleID"
+names(NOAA)<-c("SampleID2", "Absorbance", "Concentration", "Dilution", "Test","NOAAconc", "SampleID")
+
+```
+Code for 'controlS'
+```{r}
+stan.in3 <- function(data = NOAA, chains=nchains){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    y <- data$Absorbance[!temp]
+    x <- data$Concentration[!temp]
+    N <- n-sum(temp)
+    M <- sum(temp)
+    y0 <- data$Absorbance[temp]
+    dlf <- data$Dilution[temp]
+    wsC<-ordered(data$SampleID[temp])
+    ws <- as.numeric(wsC)
+    stan.dat <- list(N=N, M=M, MM=max(ws), y=y, x=x,
+                     y0=y0, ws=ws, dlf=dlf)
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(delta = runif(1,0.5,1), th2=runif(1),
+                           th3 = runif(1), th1=runif(1,0,0.1),
+                           logx0 = rnorm(max(ws)),
+                           sigma = runif(1))
+    parameters <- c("th1","th2","th3","th4","sigma","x0")
+    return(list(para=parameters, data=stan.dat, inits=inits,
+              n.chains=chains, ControlSample=(1:max(ws))[levels(wsC)=="Control 1"]))
+}
+
+
+controlS <- numeric()
+for (i in 1:9){
+    print(paste("Test:", i))
+    input.to.stan <- stan.in3(data=NOAA[NOAA$Test==i,])
+    controlS[i] <- input.to.stan$ControlSample
+}
+```
+
+Only do 9 tests. Takes very long to run all tests. sBu avoids this long process. This model provides initial priors for sBu models BHM2 and BHM3.
+```{r}
+### Hierarchical ELISA model with water samples
+###    unknown concentrations estimaterd using hierarchical model
+### Stan Model (multiple test kits)
+### The model: y=th4+(th1-th4)/[1+(x/th3)^(-th2)]
+
+ELISA4 <- "
+data {
+  int<lower=0> N; // sample size
+  int<lower=0> K; // number of test kits
+  int<lower=0> M; //observed ODs (for estimating concentration)
+  real y[N]; // std solution response data
+  real x[N]; // std solution conc
+  real y0[M]; // test data response
+  int MM; //unique samples
+  int ws[M]; //unique water samples
+  int<lower=1,upper=K> test1[N];
+  int<lower=1,upper=K> test2[M];
+  int<lower=1,upper=K> test3[MM];
+}
+parameters {
+  vector[K] zdelta;
+  vector[K] zth1;
+  vector[K] zth2;
+  vector[K] zth3;
+  vector<lower=0>[K] sigma;
+  vector[MM] logx0;
+  vector<lower=0>[K] x0sig;
+  vector[K] x0mu;
+  real mu_dlt;
+  real<lower=0> sig_dlt;
+  real mu_th1;
+  real<lower=0> sig_th1;
+  real mu_th2;
+  real<lower=0> sig_th2;
+  real mu_th3;
+  real<lower=0> sig_th3;
+}
+transformed parameters{
+  vector<lower=0>[K] delta;
+  vector<lower=0>[K] th1;
+  vector<lower=0>[K] th2;
+  vector<lower=0>[K] th3;
+  vector[N] mu;
+  vector[M] mu0;
+  vector<lower=0>[N] sig;
+  vector<lower=0>[M] sig0;
+  vector<lower=0>[K] th4;
+  vector<lower=0>[MM] x0;
+
+  x0 = exp(logx0);
+  delta = mu_dlt+sig_dlt*zdelta;
+  th1 = mu_th1+sig_th1*zth1;
+  th2 = mu_th2+sig_th2*zth2;
+  th3 = mu_th3+sig_th3*zth3;
+  th4 = th1+delta;
+  for (i in 1:N){
+    mu[i] = th4[test1[i]] -
+              delta[test1[i]]/(1+(x[i]/th3[test1[i]])^(-th2[test1[i]]));
+    sig[i] = sigma[test1[i]];
+  }
+  for (i in 1:M){
+    mu0[i] = th4[test2[i]] -
+        delta[test2[i]]/(1+(x0[ws[i]]/th3[test2[i]])^(-th2[test2[i]]));
+    sig0[i] = sigma[test2[i]];
+  }
+}
+model {
+  x0mu ~ normal(0, 2.5);
+  x0sig ~ normal(0, 2.5);
+  mu_dlt ~ normal(0, 2.5);
+  sig_dlt ~ normal(0, 2.5);
+  mu_th1 ~ normal(0, 2.5);
+  sig_th1 ~ normal(0, 2.5);
+  mu_th2 ~ normal(0, 2.5);
+  sig_th2 ~ normal(0, 2.5);
+  mu_th3 ~ normal(0, 2.5);
+  sig_th3 ~ normal(0, 2.5);
+
+  for (j in 1:MM)
+    logx0[j] ~ normal(x0mu[test3[j]], x0sig[test3[j]]);
+  zth1~std_normal();
+  zth2~std_normal();
+  zth3~std_normal();
+  zdelta~std_normal();
+  target += normal_lpdf(y| mu, sig);
+  target += normal_lpdf(y0| mu0, sig0);
+}
+"
+
+stan.fit4 <- stan_model(model_code=ELISA4)
+
+stan.in5 <- function(data = NOAA, chains=nchains){
+    n <- dim(data)[1]
+    temp  <- is.na(data$Concentration)
+    tmp1 <- data[!temp,]
+    tmp2 <- data[temp,]
+    test1 <- as.numeric(ordered(tmp1$Test))
+    y <- tmp1$Absorbance
+    x <- tmp1$Concentration
+    N <- dim(tmp1)[1]
+    M <- dim(tmp2)[1]
+    K <- max(test1)
+    y0 <- tmp2$Absorbance
+    wsC <- ordered(paste(tmp2$Test,tmp2$SampleID2))
+    wsLevels <- levels(wsC)
+    tmpp <- str_detect(wsLevels, "Control")
+    ws <- as.numeric(wsC)
+    test2 <- as.numeric(ordered(tmp2$Test))
+    test3 <- as.numeric(substring(wsLevels, 1, 1))
+    stan.dat <- list(N=N, M=M, MM=max(ws), K=K, y=y, x=x,
+                     y0=y0, ws=ws, test1=test1,
+                     test2=test2, test3=test3)
+    inits <- list()
+    for (i in 1:chains)
+        inits[[i]] <- list(zdelta=runif(K,0.5,1), zth1=runif(K,0,0.1),
+                           zth2=runif(K,0.4,0.6), zth3=runif(K,0.3,0.7),
+                           sigma=runif(K), logx0=rnorm(max(ws)),
+                           x0sig=runif(K), x0mu=rnorm(K),
+                           mu_dlt=runif(1), sig_dlt=runif(1),
+                           mu_th1=runif(1), sig_th1=runif(1),
+                           mu_th2=runif(1), sig_th2=runif(1),
+                           mu_th3=runif(1), sig_th3=runif(1))
+
+    parameters <- c("th1", "th2","th3","th4","sigma","x0",
+                    "x0mu","x0sig", "mu_dlt", "sig_dlt", "mu_th1",
+                    "sig_th1", "mu_th2", "sig_th2", "mu_th3", "sig_th3")
+    return(list(para=parameters, data=stan.dat, inits=inits, n.chains=chains,
+                ControlSample=(1:max(ws))[tmpp]))
+}
+
+input.to.stan <- stan.in5(data=NOAA)
+BHM2ControlSamples <- input.to.stan$ControlSample
+fit2keep <- sampling(stan.fit4, data = input.to.stan$data,
+                     init=input.to.stan$inits,
+                     pars = input.to.stan$para,
+                     iter=niters, thin=nthin,
+                     chains=input.to.stan$n.chains)
+print(fit2keep)
+test_stanBHM2 <- rstan::extract(fit2keep)
+save(test_stanBHM2, file="BHM_Prior.RData")
+load("BHM_Prior.RData")
+```
